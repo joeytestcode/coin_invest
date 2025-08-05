@@ -1,0 +1,7 @@
+python-dotenv
+openai
+pyupbit
+streamlit
+requests
+plotly
+schedule
