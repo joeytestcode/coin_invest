@@ -1,0 +1,31 @@
+# Configuration file for coin investment app
+api:
+  upbit_access_key: "your_access_key_here"
+  upbit_secret_key: "your_secret_key_here"
+  openai_api_key: "your_openai_key_here"
+
+trading:
+  default_currency: "KRW"
+  max_investment_amount: 100000
+  risk_level: "medium"  # low, medium, high
+  trading_enabled: true
+  stop_loss_percentage: 5.0
+  take_profit_percentage: 10.0
+  coins_to_trade:
+    - "BTC"
+    - "ETH"
+    - "ADA"
+  
+dashboard:
+  port: 8501
+  refresh_interval: 30  # seconds
+  auto_refresh: true
+  theme: "dark"
+
+database:
+  path: "coin_auto_trade.db"
+  backup_enabled: true
+  backup_interval: 3600  # seconds
+
+# You can add comments in YAML!
+# This makes it more maintainable
