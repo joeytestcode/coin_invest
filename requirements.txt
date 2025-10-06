@@ -3,5 +3,7 @@ openai
 pyupbit
 streamlit
 requests
-plotly
 schedule
+slack-sdk
+plotly
+pandas

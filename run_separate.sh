@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Crypto Auto Trading Separate Launcher
-echo "🚀 Starting Crypto Auto Trading in separate terminals..."
+# Crypto Auto Trading Separate Launcher (Individual Bots)
+echo "🚀 Starting Individual Crypto Trading Bots in separate terminals..."
 
 # Check if we're in the right directory
 if [ ! -f "autotrade.py" ]; then
@@ -51,13 +51,23 @@ start_in_terminal() {
         return
     fi
 }
+
+echo "📈 Starting individual trading bots in separate terminals..."
+start_in_terminal "ETH Trading Bot" "python autotrade_eth.py"
+sleep 1
+start_in_terminal "XRP Trading Bot" "python autotrade_xrp.py"
+
+echo "⏳ Waiting 3 seconds for trading bots to initialize..."
+sleep 3
+
 echo "📊 Starting dashboard in new terminal..."
 start_in_terminal "Trading Dashboard" "streamlit run autotrade_dashboard.py"
 
 
 echo ""
-echo "🎉 Both services have been started in separate terminals!"
-echo "📈 Trading Bot: Running autotrade.py"
+echo "🎉 All services have been started in separate terminals!"
+echo "📈 ETH Trading Bot: Running autotrade_eth.py"
+echo "📈 XRP Trading Bot: Running autotrade_xrp.py"
 echo "📊 Dashboard: Available at http://localhost:8501"
 echo ""
 echo "💡 To stop the services:"

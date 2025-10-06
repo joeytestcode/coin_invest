@@ -51,13 +51,20 @@ start_in_terminal() {
         return
     fi
 }
+
+echo "📈 Starting multi-crypto trading bot in new terminal..."
+start_in_terminal "Multi-Crypto Trading Bot" "python autotrade_multi.py"
+
+echo "⏳ Waiting 3 seconds for trading bot to initialize..."
+sleep 3
+
 echo "📊 Starting dashboard in new terminal..."
 start_in_terminal "Trading Dashboard" "streamlit run autotrade_dashboard.py"
 
 
 echo ""
 echo "🎉 Both services have been started in separate terminals!"
-echo "📈 Trading Bot: Running autotrade.py"
+echo "📈 Multi-Crypto Trading Bot: Running autotrade_multi.py (ETH + XRP)"
 echo "📊 Dashboard: Available at http://localhost:8501"
 echo ""
 echo "💡 To stop the services:"
