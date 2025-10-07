@@ -3,12 +3,6 @@
 # Crypto Auto Trading Separate Launcher
 echo "🚀 Starting Crypto Auto Trading in separate terminals..."
 
-# Check if we're in the right directory
-if [ ! -f "autotrade.py" ]; then
-    echo "❌ Error: autotrade.py not found. Please run this script from the project directory."
-    exit 1
-fi
-
 # Check if .env file exists
 if [ ! -f ".env" ]; then
     echo "❌ Error: .env file not found. Please create .env file with your API keys."
@@ -37,17 +31,6 @@ start_in_terminal() {
     elif command -v konsole &> /dev/null; then
         konsole --title "$title" --workdir "$CURRENT_DIR" -e bash -c "source .venv/bin/activate && export \$(cat .env | xargs) && $command; echo 'Press Enter to close...'; read" &
     else
-        echo "⚠️  No supported terminal emulator found. Running in background instead..."
-        source .venv/bin/activate
-        # Load environment variables from .env file
-        export $(cat .env | xargs)
-        if [ "$title" = "Trading Bot" ]; then
-            python autotrade.py > trading_bot.log 2>&1 &
-            echo "📈 Trading bot started in background (check trading_bot.log for output)"
-        else
-            streamlit run autotrade_dashboard.py --server.headless true > dashboard.log 2>&1 &
-            echo "📊 Dashboard started in background (check dashboard.log for output)"
-        fi
         return
     fi
 }
