@@ -368,7 +368,8 @@ class MultiCryptoTrader:
 
         """Initialize traders for each configured cryptocurrency"""
         for crypto_symbol, config in CRYPTO_CONFIGS.items():
-            self.traders[crypto_symbol] = CryptoTrader(crypto_symbol, config)
+            if config.get("enabled", False):
+                self.traders[crypto_symbol] = CryptoTrader(crypto_symbol, config)
         
         print(f"🎯 Multi-Crypto Trader initialized with {len(self.traders)} cryptocurrencies")
         print(f"📈 Trading: {', '.join(CRYPTO_CONFIGS.keys())}")
