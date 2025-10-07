@@ -414,16 +414,25 @@ class MultiCryptoTrader:
         """Run the trading scheduler"""
         print(f"🔄 Starting Multi-Crypto Auto Trading Scheduler...")
         print(f"⚙️ Mode: {'Parallel' if parallel else 'Sequential'} execution")
+
+        def configure_schedule(trade_interval_hours):
+            # Execute once immediately
+            if parallel:
+                self.execute_all_trades_parallel()
+                schedule.every(trade_interval_hours).hours.do(self.execute_all_trades_parallel)
+            else:
+                self.execute_all_trades_sequential()
+                schedule.every(trade_interval_hours).hours.do(self.execute_all_trades_sequential)
         
-        # Execute once immediately
-        if parallel:
-            self.execute_all_trades_parallel()
-            schedule.every().hour.do(self.execute_all_trades_parallel)
-        else:
-            self.execute_all_trades_sequential()
-            schedule.every().hour.do(self.execute_all_trades_sequential)
-        
+        trade_interval_hours = config_manager.get("trade_interval_hours", 4)
+        configure_schedule(trade_interval_hours)
+
         while True:
+            if trade_interval_hours != config_manager.get("trade_interval_hours", 4):
+                schedule.clear()
+                configure_schedule(trade_interval_hours)
+                print(f"🔄 Trade interval updated to every {trade_interval_hours} hours")
+
             schedule.run_pending()
             time.sleep(60)
 
