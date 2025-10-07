@@ -7,3 +7,4 @@ schedule
 slack-sdk
 plotly
 pandas
+PyYAML

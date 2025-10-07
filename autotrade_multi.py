@@ -11,35 +11,17 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import threading
 from concurrent.futures import ThreadPoolExecutor
+
+from config_manager import ConfigManager
+
 load_dotenv()
 
 # Add rate limiting tracking
 LAST_NEWS_FETCH = {}
 NEWS_FETCH_INTERVAL = 3600  # Fetch news only once per hour (3600 seconds)
 
-# Configuration for multiple cryptocurrencies
-CRYPTO_CONFIGS = {
-    "XRP": {
-        "name": "Ripple",
-        "ticker": "KRW-XRP",
-        "db_name": "coin_auto_trade_xrp.db"
-    },
-    "ETH": {
-        "name": "Ethereum",
-        "ticker": "KRW-ETH",
-        "db_name": "coin_auto_trade_eth.db"
-    },
-    "SOL": {
-        "name": "Solana",
-        "ticker": "KRW-SOL",
-        "db_name": "coin_auto_trade_sol.db"
-    },
-    "BTC": {
-        "name": "Bitcoin",
-        "ticker": "KRW-BTC",
-        "db_name": "coin_auto_trade_btc.db"
-    }
-}
+config_manager = ConfigManager(config_file="config_coins.json")
+config_manager.load_config()
 
 class CryptoTrader:
     def __init__(self, crypto_symbol, config):
@@ -147,8 +129,7 @@ class CryptoTrader:
             if "news_results" in results:
                 for news_item in results["news_results"][:num_results]:
                     news_data.append({
-                        "title": news_item.get("title"),
-                        "date": news_item.get("date")
+                        "link": news_item.get("link")
                     })
                 print(f"✅ {self.crypto_symbol}: Retrieved {len(news_data)} news articles")
                 LAST_NEWS_FETCH[last_fetch_key] = current_time
@@ -280,32 +261,7 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
             messages=[
                 {
                     "role": "system",
-                    "content": f"""
-                        You're a cryptocurrency investment expert for {self.crypto_name}.
-                        You invest according to the following rules:
-                            1. Most of all, I want to make a lot of money!
-                            2. Never lose money.
-                            3. Never miss the opportunity to buy.
-                            4. Never miss the opportunity to sell.
-
-                        Analyze the provided data:
-                            1. **Chart Data:** Multi-timeframe OHLCV data ('short_term': 1h, 'mid_term': 4h, 'long_term': daily).
-                            2. **News Data:** Recent cryptocurrency news articles with 'title' and 'date'.
-                            3. **Current Balance:** Your current KRW and cryptocurrency holdings, and Current price of the cryptocurrency.
-                            4. **Recent Trades:** Your recent trades with decisions and their outcomes.
-
-                        **Task:** Based on technical analysis and news sentiment, decide whether to **buy**, **sell**, or **hold** {self.crypto_name} cryptocurrency.
-                        For buy decisions, include a percentage (1-100) indicating what portion of available funds to use.
-                        For sell decisions, include a percentage (1-100) indicating what portion of holdings to sell.
-                        For hold, the percentage should be 100.
-
-                        Sample answer 1:
-                        {{"decision":"buy", "percentage": 50, "reason":"Some technical reason to buy based on analysis result"}}
-                        Sample answer 2:
-                        {{"decision":"sell", "percentage": 30, "reason":"Some technical reason to sell based on analysis result"}}
-                        Sample answer 3:
-                        {{"decision":"hold", "percentage": 20, "reason":"Some technical reason to hold based on analysis result"}}
-                        """
+                    "content": config_manager.get("trade_message", "error")
                 },
                 {
                     "role": "user",
@@ -332,8 +288,6 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
         try:
             # Call the AI trading function
             result = self.ai_trade()
-            print(f"### {self.crypto_symbol} AI Decision: {result['decision'].upper()} {result['percentage']}% ###")
-            print(f"### {self.crypto_symbol} Reason: {result['reason']} ###")
 
             # Auto investment based on the response
             upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
@@ -400,7 +354,7 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
                     order_executed
                 )
 
-            print(f"📈 {self.crypto_symbol}: Trade session completed - Order executed: {order_executed}")
+            print(f"📈 {self.crypto_symbol}: Trade session completed - {result['decision']} Order executed: {order_executed}")
             
         except Exception as e:
             print(f"❌ {self.crypto_symbol}: Error during trading session: {str(e)}")
@@ -408,8 +362,11 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
 class MultiCryptoTrader:
     def __init__(self):
         self.traders = {}
-        
-        # Initialize traders for each configured cryptocurrency
+
+    def initialize_traders(self):
+        CRYPTO_CONFIGS = config_manager.get_section("coins")
+
+        """Initialize traders for each configured cryptocurrency"""
         for crypto_symbol, config in CRYPTO_CONFIGS.items():
             self.traders[crypto_symbol] = CryptoTrader(crypto_symbol, config)
         
@@ -417,6 +374,7 @@ class MultiCryptoTrader:
         print(f"📈 Trading: {', '.join(CRYPTO_CONFIGS.keys())}")
 
     def execute_all_trades_parallel(self):
+        self.initialize_traders()
         """Execute trades for all cryptocurrencies in parallel"""
         print(f"\n🚀 Starting parallel trading session for all cryptocurrencies...")
         print(f"⏰ Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -440,6 +398,7 @@ class MultiCryptoTrader:
         print(f"🎉 All trading sessions completed!")
 
     def execute_all_trades_sequential(self):
+        self.initialize_traders()
         """Execute trades for all cryptocurrencies sequentially"""
         print(f"\n🚀 Starting sequential trading session for all cryptocurrencies...")
         print(f"⏰ Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
