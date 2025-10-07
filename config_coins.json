@@ -3,10 +3,7 @@
         "XRP": {
         "name": "Ripple",
         "ticker": "KRW-XRP",
-        "db_name": "coin_auto_trade_xrp.db",
-        "enabled": true,
-        "max_investment_krw": 20000,
-        "risk_level": "high"
+        "db_name": "coin_auto_trade_xrp.db"
         },
         "ETH": {
             "name": "Ethereum",
