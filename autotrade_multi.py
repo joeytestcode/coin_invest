@@ -418,10 +418,10 @@ class MultiCryptoTrader:
         # Execute once immediately
         if parallel:
             self.execute_all_trades_parallel()
-            schedule.every().hour.do(self.execute_all_trades_parallel)
+            schedule.every(4).hours.do(self.execute_all_trades_parallel)
         else:
             self.execute_all_trades_sequential()
-            schedule.every().hour.do(self.execute_all_trades_sequential)
+            schedule.every(4).hours.do(self.execute_all_trades_sequential)
         
         while True:
             schedule.run_pending()
