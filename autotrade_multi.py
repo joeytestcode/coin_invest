@@ -148,7 +148,8 @@ class CryptoTrader:
                 for news_item in results["news_results"][:num_results]:
                     news_data.append({
                         "title": news_item.get("title"),
-                        "date": news_item.get("date")
+                        "date": news_item.get("date"),
+                        "link": news_item.get("link")
                     })
                 print(f"✅ {self.crypto_symbol}: Retrieved {len(news_data)} news articles")
                 LAST_NEWS_FETCH[last_fetch_key] = current_time
@@ -290,11 +291,11 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
 
                         Analyze the provided data:
                             1. **Chart Data:** Multi-timeframe OHLCV data ('short_term': 1h, 'mid_term': 4h, 'long_term': daily).
-                            2. **News Data:** Recent cryptocurrency news articles with 'title' and 'date'.
+                            2. **News Data:** Recent cryptocurrency news articles with 'title', 'date', and 'link'.
                             3. **Current Balance:** Your current KRW and cryptocurrency holdings, and Current price of the cryptocurrency.
                             4. **Recent Trades:** Your recent trades with decisions and their outcomes.
 
-                        **Task:** Based on technical analysis and news sentiment, decide whether to **buy**, **sell**, or **hold** {self.crypto_name} cryptocurrency.
+                        **Task:** Based on technical analysis of Chart Data and news sentiment from each link of News Data, decide whether to **buy**, **sell**, or **hold** {self.crypto_name} cryptocurrency.
                         For buy decisions, include a percentage (1-100) indicating what portion of available funds to use.
                         For sell decisions, include a percentage (1-100) indicating what portion of holdings to sell.
                         For hold, the percentage should be 100.
