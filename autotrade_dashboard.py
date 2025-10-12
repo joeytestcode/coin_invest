@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # Configuration
-STALE_DATA_THRESHOLD_HOURS = 5  # Hours after which data is considered stale
+STALE_DATA_THRESHOLD_HOURS = 7  # Hours after which data is considered stale
 NOTIFICATION_STATE_FILE = "dashboard_state/notification_tracking.json"
 
 # Ensure state directory exists
