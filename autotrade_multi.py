@@ -11,6 +11,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import feedparser
 
 from config_manager import ConfigManager
 
@@ -85,13 +86,9 @@ class CryptoTrader:
         conn.close()
         return trades
 
-    def get_crypto_news(self, api_key, num_results=5):
-        """Get news data with rate limiting per cryptocurrency"""
+    def get_crypto_news(self, api_key=None, num_results=5):
+        """Get news data from reputable crypto news sources using RSS feeds"""
         global LAST_NEWS_FETCH
-        
-        if not api_key:
-            print(f"⚠️ {self.crypto_symbol}: SerpAPI key not found, skipping news data")
-            return []
         
         # Check rate limiting per crypto
         current_time = time.time()
@@ -102,39 +99,66 @@ class CryptoTrader:
             print(f"⏰ {self.crypto_symbol}: Rate limiting - Next news fetch in {remaining_time/60:.1f} minutes")
             return []
         
-        params = {
-            "engine": "google_news", 
-            "q": f"{self.crypto_name} news",
-            "gl": "us",
-            "hl": "en", 
-            "api_key": api_key
-        }
-        api_url = "https://serpapi.com/search.json"
+        # RSS feeds from reputable crypto news sources
+        rss_feeds = [
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",  # CoinDesk
+            "https://cointelegraph.com/rss",  # Cointelegraph
+            "https://feeds.bloomberg.com/markets/news.rss",  # Bloomberg (general, but includes crypto)
+            "https://www.cnbc.com/id/10001147/device/rss/rss.html",  # CNBC Markets (includes crypto)
+        ]
+        
         news_data = []
+        articles_found = 0
 
         try:
-            print(f"📰 {self.crypto_symbol}: Fetching latest news...")
-            response = requests.get(api_url, params=params, timeout=10)
+            print(f"📰 {self.crypto_symbol}: Fetching latest news from crypto news sources...")
             
-            if response.status_code == 429:
-                print(f"⚠️ {self.crypto_symbol}: SerpAPI rate limit exceeded. Skipping news data.")
-                return []
+            for rss_url in rss_feeds:
+                if articles_found >= num_results:
+                    break
+                    
+                try:
+                    # Parse RSS feed
+                    feed = feedparser.parse(rss_url)
+                    
+                    if not feed.entries:
+                        continue
+                    
+                    # Filter articles related to the specific cryptocurrency
+                    crypto_keywords = [self.crypto_name.lower(), self.crypto_symbol.lower()]
+                    
+                    for entry in feed.entries:
+                        if articles_found >= num_results:
+                            break
+                            
+                        title = entry.get('title', '').lower()
+                        summary = entry.get('summary', '').lower() if entry.get('summary') else ''
+                        
+                        # Check if article is relevant to this cryptocurrency
+                        is_relevant = any(keyword in title or keyword in summary for keyword in crypto_keywords)
+                        
+                        # If no specific crypto match, include general crypto articles for major cryptos
+                        if not is_relevant and self.crypto_symbol in ['BTC', 'ETH', 'XRP', 'ADA', 'DOT']:
+                            general_crypto_terms = ['crypto', 'cryptocurrency', 'bitcoin', 'ethereum', 'blockchain']
+                            is_relevant = any(term in title or term in summary for term in general_crypto_terms)
+                        
+                        if is_relevant:
+                            news_data.append({
+                                "link": entry.get('link', ''),
+                                "title": entry.get('title', ''),
+                                "published": entry.get('published', '')
+                            })
+                            articles_found += 1
+                            
+                except Exception as e:
+                    print(f"⚠️ {self.crypto_symbol}: Error fetching from {rss_url}: {str(e)}")
+                    continue
             
-            if response.status_code != 200:
-                print(f"⚠️ {self.crypto_symbol}: SerpAPI error {response.status_code}")
-                return []
-            
-            results = response.json()
-
-            if "news_results" in results:
-                for news_item in results["news_results"][:num_results]:
-                    news_data.append({
-                        "link": news_item.get("link")
-                    })
-                print(f"✅ {self.crypto_symbol}: Retrieved {len(news_data)} news articles")
+            if articles_found > 0:
+                print(f"✅ {self.crypto_symbol}: Retrieved {articles_found} relevant news articles")
                 LAST_NEWS_FETCH[last_fetch_key] = current_time
             else:
-                print(f"⚠️ {self.crypto_symbol}: No news results found")
+                print(f"⚠️ {self.crypto_symbol}: No relevant news articles found")
                 
         except Exception as e:
             print(f"⚠️ {self.crypto_symbol}: Error fetching news: {str(e)}")
@@ -220,11 +244,9 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
 
         # Get news data
         news_articles = []
-        if os.getenv("SERAPI_API_KEY"):
-            news_articles = self.get_crypto_news(
-                api_key=os.getenv("SERAPI_API_KEY"),
-                num_results=4
-            )
+        news_articles = self.get_crypto_news(
+            num_results=7
+        )
 
         # Get current balance
         print(f"💰 {self.crypto_symbol}: Fetching current balance...")
