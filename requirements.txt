@@ -8,3 +8,4 @@ slack-sdk
 plotly
 pandas
 PyYAML
+feedparser
