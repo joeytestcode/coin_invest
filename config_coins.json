@@ -1,7 +1,7 @@
 {
     "coins":{
         "XRP": {
-            "name": "Ripple",
+            "name": "XRP",
             "ticker": "KRW-XRP",
             "db_name": "coin_auto_trade_xrp.db",
             "enabled": true
