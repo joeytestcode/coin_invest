@@ -277,6 +277,7 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
         # Call OpenAI API
         from openai import OpenAI
         client = OpenAI()
+        client.api_key = os.getenv("OPENAI_API_KEY")
 
         response = client.chat.completions.create(
             model="gpt-4.1",
