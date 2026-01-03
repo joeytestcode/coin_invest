@@ -238,8 +238,8 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
         except Exception as e:
             print(f"⚠️ {self.crypto_symbol}: Error sending Slack notification: {str(e)}")
 
-    def ai_trade(self):
-        """Perform AI-based trading analysis and decision"""
+    def get_market_data(self):
+        """Gather market data for analysis without executing trade"""
         print(f"📊 {self.crypto_symbol}: Fetching chart data...")
         
         # Get chart data
@@ -248,10 +248,7 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
         long_term_df = pyupbit.get_ohlcv(self.ticker, interval="day", count=30)         # daily x 30
 
         # Get news data
-        news_articles = []
-        news_articles = self.get_crypto_news(
-            num_results=7
-        )
+        news_articles = self.get_crypto_news(num_results=5)
 
         # Get current balance
         print(f"💰 {self.crypto_symbol}: Fetching current balance...")
@@ -264,6 +261,7 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
         recent_trades = self.get_recent_trades(limit=4)
 
         data_payload = {
+            "symbol": self.crypto_symbol,
             "short_term": json.loads(short_term_df.to_json()) if short_term_df is not None else None,
             "mid_term": json.loads(mid_term_df.to_json()) if mid_term_df is not None else None,
             "long_term": json.loads(long_term_df.to_json()) if long_term_df is not None else None,
@@ -276,97 +274,15 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
             },
             "recent_trades": recent_trades
         }
+        return data_payload
 
-        print(f"🤖 {self.crypto_symbol}: Sending data to AI for analysis using {SELECTED_AI_MODEL}...")
-        
-        result = {}
-        
-        try:
-            if SELECTED_AI_MODEL.startswith("gpt"):
-                # Call OpenAI API
-                from openai import OpenAI
-                client = OpenAI()
-                client.api_key = os.getenv("OPENAI_API_KEY")
-
-                # Determine token parameter based on model
-                # Newer models (o1, o3, gpt-5) use max_completion_tokens instead of max_tokens
-                token_param = "max_completion_tokens" if SELECTED_AI_MODEL.startswith(("o1", "o3", "gpt-5")) else "max_tokens"
-                
-                completion_args = {
-                    "model": SELECTED_AI_MODEL,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": config_manager.get("trade_message", "error")
-                        },
-                        {
-                            "role": "user",
-                            "content": json.dumps(data_payload)
-                        }
-                    ],
-                    "temperature": 1,
-                    "top_p": 1,
-                    "store": True
-                }
-                
-                # Add the correct token parameter
-                completion_args[token_param] = 16384
-
-                response = client.chat.completions.create(**completion_args)
-
-                result_text = response.choices[0].message.content
-                result = json.loads(result_text)
-                
-            elif SELECTED_AI_MODEL.startswith("gemini"):
-                # Call Gemini API
-                genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-                
-                system_instruction = config_manager.get("trade_message", "error")
-                
-                # Initialize model with system instruction
-                model = genai.GenerativeModel(
-                    model_name=SELECTED_AI_MODEL,
-                    system_instruction=system_instruction
-                )
-                
-                # Generate content
-                response = model.generate_content(json.dumps(data_payload))
-                result_text = response.text
-                
-                # Clean up json string if needed (remove ```json ... ```)
-                if result_text.strip().startswith("```json"):
-                    result_text = result_text.strip()[7:]
-                elif result_text.strip().startswith("```"):
-                    result_text = result_text.strip()[3:]
-                    
-                if result_text.strip().endswith("```"):
-                    result_text = result_text.strip()[:-3]
-                
-                result_text = result_text.strip()
-                result = json.loads(result_text)
-                
-            else:
-                print(f"❌ Error: Unsupported AI model {SELECTED_AI_MODEL}")
-                return None
-                
-        except Exception as e:
-            print(f"❌ Error during AI analysis: {str(e)}")
-            # Return a safe default or re-raise depending on desired behavior
-            # For now, let's return a HOLD decision to be safe
-            return {"decision": "hold", "percentage": 100, "reason": f"Error during AI analysis: {str(e)}"}
-
-        return result
-
-    def execute_trade(self):
-        """Execute trading decision"""
+    def execute_decision(self, result):
+        """Execute a specific trading decision passed from the multi-trader"""
         print(f"\n{'='*50}")
-        print(f"🚀 {self.crypto_symbol} ({self.crypto_name}) Trading Session")
+        print(f"🚀 {self.crypto_symbol} ({self.crypto_name}) Executing Decision")
         print(f"{'='*50}")
         
         try:
-            # Call the AI trading function
-            result = self.ai_trade()
-
             # Auto investment based on the response
             upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
             
@@ -437,6 +353,13 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
         except Exception as e:
             print(f"❌ {self.crypto_symbol}: Error during trading session: {str(e)}")
 
+    def ai_trade(self):
+        """Legacy method - kept for compatibility but not used in multi-mode"""
+        data = self.get_market_data()
+        # ... (rest of legacy logic if needed, but we are replacing the caller)
+        return None 
+
+
 class MultiCryptoTrader:
     def __init__(self):
         self.traders = {}
@@ -452,55 +375,131 @@ class MultiCryptoTrader:
         print(f"🎯 Multi-Crypto Trader initialized with {len(self.traders)} cryptocurrencies")
         print(f"📈 Trading: {', '.join(CRYPTO_CONFIGS.keys())}")
 
-    def execute_all_trades_parallel(self):
-        self.initialize_traders()
-        """Execute trades for all cryptocurrencies in parallel"""
-        print(f"\n🚀 Starting parallel trading session for all cryptocurrencies...")
-        print(f"⏰ Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    def get_combined_decision(self):
+        """Gather data from all traders and get a combined AI decision"""
+        print(f"\n🧠 Analyzing market for all cryptocurrencies...")
         
-        # Use ThreadPoolExecutor to run trades in parallel
-        with ThreadPoolExecutor(max_workers=len(self.traders)) as executor:
-            # Submit all trading tasks
-            futures = {
-                executor.submit(trader.execute_trade): crypto_symbol 
-                for crypto_symbol, trader in self.traders.items()
-            }
-            
-            # Wait for all tasks to complete
-            for future in futures:
-                crypto_symbol = futures[future]
-                try:
-                    future.result()  # This will raise an exception if the task failed
-                except Exception as e:
-                    print(f"❌ {crypto_symbol}: Trading session failed: {str(e)}")
+        # Gather data from all traders
+        market_data = {}
+        for symbol, trader in self.traders.items():
+            try:
+                market_data[symbol] = trader.get_market_data()
+            except Exception as e:
+                print(f"⚠️ Error gathering data for {symbol}: {e}")
         
-        print(f"🎉 All trading sessions completed!")
+        if not market_data:
+            print("❌ No market data available")
+            return {}
 
-    def execute_all_trades_sequential(self):
+        # Construct prompt for multi-coin analysis
+        system_prompt = config_manager.get("trade_message", "error")
+        
+        # Append instruction for multi-coin output format
+        system_prompt += """
+        
+        IMPORTANT: You are analyzing MULTIPLE cryptocurrencies.
+        Return a JSON object where keys are the crypto symbols (e.g. "BTC", "ETH", "XRP") and values are the decision objects.
+        Example format:
+        {
+            "BTC": {"decision": "buy", "percentage": 50, "reason": "..."},
+            "ETH": {"decision": "hold", "percentage": 100, "reason": "..."},
+            "XRP": {"decision": "sell", "percentage": 20, "reason": "..."}
+        }
+        Consider the opportunity cost between coins. If one coin has a much better setup, prioritize it.
+        """
+
+        print(f"🤖 Sending combined data to AI ({SELECTED_AI_MODEL})...")
+        
+        result = {}
+        try:
+            if SELECTED_AI_MODEL.startswith("gpt"):
+                from openai import OpenAI
+                client = OpenAI()
+                client.api_key = os.getenv("OPENAI_API_KEY")
+                
+                token_param = "max_completion_tokens" if SELECTED_AI_MODEL.startswith(("o1", "o3", "gpt-5")) else "max_tokens"
+                
+                completion_args = {
+                    "model": SELECTED_AI_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": system_prompt
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(market_data)
+                        }
+                    ],
+                    "temperature": 1,
+                    "top_p": 1,
+                    "store": True
+                }
+                completion_args[token_param] = 16384
+                
+                response = client.chat.completions.create(**completion_args)
+                result_text = response.choices[0].message.content
+                result = json.loads(result_text)
+                
+            elif SELECTED_AI_MODEL.startswith("gemini"):
+                genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+                model = genai.GenerativeModel(
+                    model_name=SELECTED_AI_MODEL,
+                    system_instruction=system_prompt
+                )
+                response = model.generate_content(json.dumps(market_data))
+                result_text = response.text
+                
+                if result_text.strip().startswith("```json"):
+                    result_text = result_text.strip()[7:]
+                elif result_text.strip().startswith("```"):
+                    result_text = result_text.strip()[3:]
+                if result_text.strip().endswith("```"):
+                    result_text = result_text.strip()[:-3]
+                    
+                result = json.loads(result_text.strip())
+                
+        except Exception as e:
+            print(f"❌ Error during combined AI analysis: {str(e)}")
+            return {}
+            
+        return result
+
+    def execute_all_trades_centralized(self):
+        """Execute trades based on a centralized AI decision"""
         self.initialize_traders()
-        """Execute trades for all cryptocurrencies sequentially"""
-        print(f"\n🚀 Starting sequential trading session for all cryptocurrencies...")
+        print(f"\n🚀 Starting centralized trading session...")
         print(f"⏰ Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        for crypto_symbol, trader in self.traders.items():
-            trader.execute_trade()
-            time.sleep(2)  # Small delay between trades
+        # Get combined decision
+        decisions = self.get_combined_decision()
+        
+        if not decisions:
+            print("❌ No decisions received from AI")
+            return
+
+        # Execute decisions sequentially
+        for symbol, decision in decisions.items():
+            if symbol in self.traders:
+                try:
+                    self.traders[symbol].execute_decision(decision)
+                except Exception as e:
+                    print(f"❌ Error executing trade for {symbol}: {e}")
+            else:
+                print(f"⚠️ Received decision for unknown symbol: {symbol}")
         
         print(f"🎉 All trading sessions completed!")
 
     def run_scheduler(self, parallel=True):
         """Run the trading scheduler"""
         print(f"🔄 Starting Multi-Crypto Auto Trading Scheduler...")
-        print(f"⚙️ Mode: {'Parallel' if parallel else 'Sequential'} execution")
+        # Force centralized execution for better portfolio management
+        print(f"⚙️ Mode: Centralized Portfolio Analysis")
 
         def configure_schedule(trade_interval_hours):
             # Execute once immediately
-            if parallel:
-                self.execute_all_trades_parallel()
-                schedule.every(trade_interval_hours).hours.do(self.execute_all_trades_parallel)
-            else:
-                self.execute_all_trades_sequential()
-                schedule.every(trade_interval_hours).hours.do(self.execute_all_trades_sequential)
+            self.execute_all_trades_centralized()
+            schedule.every(trade_interval_hours).hours.do(self.execute_all_trades_centralized)
         
         trade_interval_hours = config_manager.get("trade_interval_hours", 4)
         configure_schedule(trade_interval_hours)
@@ -522,9 +521,8 @@ def main():
     # Create multi-crypto trader
     multi_trader = MultiCryptoTrader()
     
-    # Run with parallel execution (default)
-    # Set parallel=False for sequential execution if needed
-    multi_trader.run_scheduler(parallel=True)
+    # Run with centralized execution
+    multi_trader.run_scheduler(parallel=False)
 
 if __name__ == "__main__":
     main()
