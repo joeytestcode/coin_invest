@@ -9,3 +9,4 @@ plotly
 pandas
 PyYAML
 feedparser
+google-generativeai

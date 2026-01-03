@@ -22,6 +22,7 @@ pip install -r requirements.txt
 UPBIT_ACCESS_KEY=your_upbit_access_key
 UPBIT_SECRET_KEY=your_upbit_secret_key
 OPENAI_API_KEY=your_openai_api_key
+GEMINI_API_KEY=your_gemini_api_key (if using Gemini)
 SERAPI_API_KEY=your_serapi_key (optional)
 
 # Slack Notifications (optional)

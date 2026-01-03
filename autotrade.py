@@ -12,10 +12,15 @@ from slack_sdk.errors import SlackApiError
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import feedparser
+import google.generativeai as genai
 
 from config_manager import ConfigManager
 
 load_dotenv()
+
+# AI Model Selection
+# Options: "gpt-5", "gpt-4.1", "gemini-2.0-flash-exp", "gemini-1.5-pro"
+SELECTED_AI_MODEL = "gpt-5"
 
 # Add rate limiting tracking
 LAST_NEWS_FETCH = {}
@@ -272,33 +277,83 @@ _Crypto Auto Trading Bot - {self.crypto_symbol}_ 🤖
             "recent_trades": recent_trades
         }
 
-        print(f"🤖 {self.crypto_symbol}: Sending data to AI for analysis...")
+        print(f"🤖 {self.crypto_symbol}: Sending data to AI for analysis using {SELECTED_AI_MODEL}...")
         
-        # Call OpenAI API
-        from openai import OpenAI
-        client = OpenAI()
-        client.api_key = os.getenv("OPENAI_API_KEY")
+        result = {}
+        
+        try:
+            if SELECTED_AI_MODEL.startswith("gpt"):
+                # Call OpenAI API
+                from openai import OpenAI
+                client = OpenAI()
+                client.api_key = os.getenv("OPENAI_API_KEY")
 
-        response = client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[
-                {
-                    "role": "system",
-                    "content": config_manager.get("trade_message", "error")
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(data_payload)
+                # Determine token parameter based on model
+                # Newer models (o1, o3, gpt-5) use max_completion_tokens instead of max_tokens
+                token_param = "max_completion_tokens" if SELECTED_AI_MODEL.startswith(("o1", "o3", "gpt-5")) else "max_tokens"
+                
+                completion_args = {
+                    "model": SELECTED_AI_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": config_manager.get("trade_message", "error")
+                        },
+                        {
+                            "role": "user",
+                            "content": json.dumps(data_payload)
+                        }
+                    ],
+                    "temperature": 1,
+                    "top_p": 1,
+                    "store": True
                 }
-            ],
-            temperature=1,
-            max_tokens=16384,
-            top_p=1,
-            store=True
-        )
+                
+                # Add the correct token parameter
+                completion_args[token_param] = 16384
 
-        result_text = response.choices[0].message.content
-        result = json.loads(result_text)
+                response = client.chat.completions.create(**completion_args)
+
+                result_text = response.choices[0].message.content
+                result = json.loads(result_text)
+                
+            elif SELECTED_AI_MODEL.startswith("gemini"):
+                # Call Gemini API
+                genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+                
+                system_instruction = config_manager.get("trade_message", "error")
+                
+                # Initialize model with system instruction
+                model = genai.GenerativeModel(
+                    model_name=SELECTED_AI_MODEL,
+                    system_instruction=system_instruction
+                )
+                
+                # Generate content
+                response = model.generate_content(json.dumps(data_payload))
+                result_text = response.text
+                
+                # Clean up json string if needed (remove ```json ... ```)
+                if result_text.strip().startswith("```json"):
+                    result_text = result_text.strip()[7:]
+                elif result_text.strip().startswith("```"):
+                    result_text = result_text.strip()[3:]
+                    
+                if result_text.strip().endswith("```"):
+                    result_text = result_text.strip()[:-3]
+                
+                result_text = result_text.strip()
+                result = json.loads(result_text)
+                
+            else:
+                print(f"❌ Error: Unsupported AI model {SELECTED_AI_MODEL}")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error during AI analysis: {str(e)}")
+            # Return a safe default or re-raise depending on desired behavior
+            # For now, let's return a HOLD decision to be safe
+            return {"decision": "hold", "percentage": 100, "reason": f"Error during AI analysis: {str(e)}"}
 
         return result
 
