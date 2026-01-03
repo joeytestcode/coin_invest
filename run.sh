@@ -1,4 +1,5 @@
 #!/bin/bash
+cd /home/joeyhwang/Programming/works/pythonWorks/coin_invest/
 
 # Crypto Auto Trading Separate Launcher
 echo "🚀 Starting Crypto Auto Trading in separate terminals..."
@@ -42,7 +43,7 @@ echo "⏳ Waiting 3 seconds for trading bot to initialize..."
 sleep 3
 
 echo "📊 Starting dashboard in new terminal..."
-start_in_terminal "Trading Dashboard" "streamlit run autotrade_dashboard.py"
+start_in_terminal "Trading Dashboard" "streamlit run autotrade_dashboard.py --server.headless true"
 
 
 echo ""
@@ -57,3 +58,6 @@ echo ""
 echo "📝 If terminals didn't open, check the log files:"
 echo "   - trading_bot.log (for trading bot output)"
 echo "   - dashboard.log (for dashboard output)"
+
+start_in_terminal "cloudflare connection for coin invest" "cloudflared tunnel run --token eyJhIjoiNjZkNmFiZTg5OGQ2ZmEzZmQxMjMzZmIxZWIyZWE0Y2IiLCJ0IjoiOTg0YzcyMzgtMzMwMC00NmU5LTliMTktYjY0ZmMzYzY0MjRkIiwicyI6IllURTJOR1l3TlRFdFptRmxaUzAwWmprM0xUa3pNV0V0TldWaVlUYzNPVFk1WWpFMCJ9"
+
