@@ -1,500 +1,825 @@
 import streamlit as st
-import subprocess
-import threading
-import time
-import queue
-import os
-import signal
-from io import StringIO
-import sys
-from contextlib import redirect_stdout, redirect_stderr
-import json
-from datetime import datetime
-import pickle
+import sqlite3
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
-# Configure the page
+import os
+import glob
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+import json
+
+# 페이지 설정
 st.set_page_config(
-    page_title="Crypto Auto Trading Dashboard",
-    page_icon="₿",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Crypto AI Trading Dashboard",
+    page_icon="📈",
+    layout="wide"
 )
 
-# State persistence files
-STATE_DIR = "dashboard_state"
-TRADING_STATE_FILE = os.path.join(STATE_DIR, "trading_state.json")
-OUTPUT_BUFFER_FILE = os.path.join(STATE_DIR, "output_buffer.pkl")
-DECISIONS_FILE = os.path.join(STATE_DIR, "trading_decisions.pkl")
-PROCESS_PID_FILE = os.path.join(STATE_DIR, "process_pid.txt")
+# Configuration
+STALE_DATA_THRESHOLD_HOURS = 7  # Hours after which data is considered stale
+NOTIFICATION_STATE_FILE = "dashboard_state/notification_tracking.json"
 
-# Create state directory if it doesn't exist
-os.makedirs(STATE_DIR, exist_ok=True)
+# Ensure state directory exists
+os.makedirs("dashboard_state", exist_ok=True)
 
-def save_state():
-    """Save current state to files"""
+def load_notification_state():
+    """Load notification tracking state"""
     try:
-        # Save trading state
-        state_data = {
-            "trading_active": st.session_state.trading_active,
-            "trade_interval": st.session_state.trade_interval,
-            "last_update": datetime.now().isoformat()
-        }
-        with open(TRADING_STATE_FILE, 'w') as f:
-            json.dump(state_data, f)
-        
-        # Save output buffer
-        with open(OUTPUT_BUFFER_FILE, 'wb') as f:
-            pickle.dump(st.session_state.output_buffer, f)
-        
-        # Save trading decisions
-        with open(DECISIONS_FILE, 'wb') as f:
-            pickle.dump(st.session_state.trading_decisions, f)
-        
-        # Save process PID if active
-        if st.session_state.process and st.session_state.process.poll() is None:
-            with open(PROCESS_PID_FILE, 'w') as f:
-                f.write(str(st.session_state.process.pid))
-        elif os.path.exists(PROCESS_PID_FILE):
-            os.remove(PROCESS_PID_FILE)
-            
+        if os.path.exists(NOTIFICATION_STATE_FILE):
+            with open(NOTIFICATION_STATE_FILE, 'r') as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+def save_notification_state(state):
+    """Save notification tracking state"""
+    try:
+        with open(NOTIFICATION_STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
     except Exception as e:
-        st.error(f"Error saving state: {str(e)}")
+        st.error(f"Error saving notification state: {str(e)}")
 
-def load_state():
-    """Load state from files"""
+def get_slack_user_info(client):
+    """Get current user info from Slack API"""
     try:
-        # Load trading state
-        if os.path.exists(TRADING_STATE_FILE):
-            with open(TRADING_STATE_FILE, 'r') as f:
-                state_data = json.load(f)
-                st.session_state.trade_interval = state_data.get("trade_interval", 60)
-                
-                # Check if process is still running
-                if os.path.exists(PROCESS_PID_FILE):
-                    with open(PROCESS_PID_FILE, 'r') as pid_file:
-                        pid = int(pid_file.read().strip())
-                        if is_process_running(pid):
-                            st.session_state.trading_active = True
-                            # Reconnect to existing process
-                            reconnect_to_process(pid)
-                        else:
-                            st.session_state.trading_active = False
-                            if os.path.exists(PROCESS_PID_FILE):
-                                os.remove(PROCESS_PID_FILE)
-                else:
-                    st.session_state.trading_active = False
-        
-        # Load output buffer
-        if os.path.exists(OUTPUT_BUFFER_FILE):
-            with open(OUTPUT_BUFFER_FILE, 'rb') as f:
-                st.session_state.output_buffer = pickle.load(f)
-        
-        # Load trading decisions
-        if os.path.exists(DECISIONS_FILE):
-            with open(DECISIONS_FILE, 'rb') as f:
-                st.session_state.trading_decisions = pickle.load(f)
-                
+        response = client.auth_test()
+        return response.get("user_id"), response.get("user")
     except Exception as e:
-        st.error(f"Error loading state: {str(e)}")
+        return None, None
 
-def is_process_running(pid):
-    """Check if a process with given PID is still running"""
+def send_stale_data_notification(db_name, last_update_time, hours_stale):
+    """Send Slack notification about stale database data"""
     try:
-        os.kill(pid, 0)
+        slack_token = os.getenv("SLACK_BOT_TOKEN")
+        slack_user_id = os.getenv("SLACK_USER_ID")
+        slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
+
+        if not slack_token or not slack_user_id:
+            return False
+        
+        client = WebClient(token=slack_token)
+        
+        message = f"""
+⚠️ *Trading Bot Alert - Stale Data Detected* ⚠️
+
+*Database:* `{db_name}`
+*Last Update:* {last_update_time.strftime('%Y-%m-%d %H:%M:%S')}
+*Hours Since Update:* {hours_stale:.1f} hours
+*Threshold:* {STALE_DATA_THRESHOLD_HOURS} hours
+
+🚨 **The trading bot may have stopped working!**
+
+*Possible Issues:*
+• Trading bot process has crashed
+• Database connection problems
+• System or network issues
+• Bot is in hold-only mode
+
+*Recommended Actions:*
+• Check if trading bot is still running
+• Review bot logs for errors
+• Restart the trading bot if needed
+• Verify system resources and connectivity
+
+---
+_Crypto Auto Trading Dashboard Alert_ 🤖
+        """.strip()
+        
+        # Try using the user ID directly as a channel
+        response = client.chat_postMessage(
+            channel=slack_channel_id,
+            text=f"⚠️ Trading Bot Alert - No updates in {db_name} for {hours_stale:.1f} hours",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": message
+                    }
+                }
+            ]
+        )
+        
         return True
-    except OSError:
+        
+    except SlackApiError as e:
+        st.error(f"Slack API error: {e.response['error']}")
+        return False
+    except Exception as e:
+        st.error(f"Error sending Slack notification: {str(e)}")
         return False
 
-def reconnect_to_process(pid):
-    """Attempt to reconnect to existing process"""
-    try:
-        # We can't directly reconnect to subprocess pipes, but we can track that it's running
-        st.session_state.process = type('MockProcess', (), {
-            'pid': pid,
-            'poll': lambda *args, **kwargs: None if is_process_running(pid) else 0,
-            'terminate': lambda *args, **kwargs: os.kill(pid, signal.SIGTERM),
-            'wait': lambda timeout=None, *args, **kwargs: None,
-            'stdout': None  # Explicitly set stdout to None for MockProcess
-        })()
+def check_database_freshness(db_name, df):
+    """Check if database data is stale and send notification if needed"""
+    if df.empty:
+        return
+    
+    # Get the most recent trade timestamp
+    latest_timestamp = df['timestamp'].max()
+    current_time = datetime.now()
+    
+    # Convert to timezone-naive if needed
+    if latest_timestamp.tz is not None:
+        latest_timestamp = latest_timestamp.tz_convert(None)
+    
+    time_diff = current_time - latest_timestamp
+    hours_stale = time_diff.total_seconds() / 3600
+    
+    # Load notification tracking state
+    notification_state = load_notification_state()
+    
+    # Check if data is stale
+    if hours_stale > STALE_DATA_THRESHOLD_HOURS:
+        # Check if we already sent notification for this database
+        last_notification_key = f"{db_name}_last_notification"
+        last_notification_str = notification_state.get(last_notification_key)
         
-        # Add reconnection message to output buffer
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.output_buffer.append(f"[{timestamp}] Reconnected to existing trading process (PID: {pid})")
-        st.session_state.output_buffer.append(f"[{timestamp}] Note: Cannot capture live output from reconnected process. Check logs for updates.")
-        
-    except Exception as e:
-        st.session_state.trading_active = False
-        if os.path.exists(PROCESS_PID_FILE):
-            os.remove(PROCESS_PID_FILE)
-
-# Initialize session state with persistence
-if 'trading_active' not in st.session_state:
-    st.session_state.trading_active = False
-if 'output_buffer' not in st.session_state:
-    st.session_state.output_buffer = []
-if 'process' not in st.session_state:
-    st.session_state.process = None
-if 'output_queue' not in st.session_state:
-    st.session_state.output_queue = queue.Queue()
-if 'trading_decisions' not in st.session_state:
-    st.session_state.trading_decisions = []
-if 'trade_interval' not in st.session_state:
-    st.session_state.trade_interval = 60  # Default 60 minutes
-if 'state_loaded' not in st.session_state:
-    st.session_state.state_loaded = False
-    load_state()  # Load state on first run
-    st.session_state.state_loaded = True
-
-def capture_output_from_process():
-    """Capture output from the trading process"""
-    if st.session_state.process and st.session_state.process.poll() is None:
-        try:
-            # Check if this is a real process with stdout or a mock process
-            if hasattr(st.session_state.process, 'stdout') and st.session_state.process.stdout:
-                # Read output line by line from real process
-                output = st.session_state.process.stdout.readline()
-                if output:
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    formatted_output = f"[{timestamp}] {output.strip()}"
-                    st.session_state.output_buffer.append(formatted_output)
-                    
-                    # Parse and extract trading decisions
-                    parse_trading_decision(output.strip())
-                    
-                    # Keep only last 100 lines
-                    if len(st.session_state.output_buffer) > 100:
-                        st.session_state.output_buffer.pop(0)
-                        
-                    # Save state after new output
-                    save_state()
-            else:
-                # This is a mock process (reconnected), we can't read stdout
-                # Just indicate that the process is running but we can't capture output
+        # Only send notification once per day to avoid spam
+        should_notify = True
+        if last_notification_str:
+            try:
+                last_notification = datetime.fromisoformat(last_notification_str)
+                time_since_last_notification = current_time - last_notification
+                if time_since_last_notification.total_seconds() < 24 * 3600:  # 24 hours
+                    should_notify = False
+            except:
                 pass
+        
+        if should_notify:
+            success = send_stale_data_notification(db_name, latest_timestamp, hours_stale)
+            if success:
+                # Update notification state
+                notification_state[last_notification_key] = current_time.isoformat()
+                save_notification_state(notification_state)
+                st.warning(f"📱 Sent stale data alert for {db_name} (no updates for {hours_stale:.1f} hours)")
+    else:
+        # Data is fresh, clear any previous notification tracking
+        last_notification_key = f"{db_name}_last_notification"
+        if last_notification_key in notification_state:
+            del notification_state[last_notification_key]
+            save_notification_state(notification_state)
+
+# Get all available database files
+def get_available_databases():
+    """Get all .db files in the current directory"""
+    db_files = glob.glob("*.db")
+    if not db_files:
+        # If no .db files found, create default
+        return ["coin_auto_trade.db"]
+    return sorted(db_files)
+
+# Check if database has the required table structure
+def validate_database(db_path):
+    """Check if the database has the required trades table"""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    except:
+        return False
+
+# 데이터베이스 연결 및 데이터 로드
+def load_trade_data(db_name):
+    """Load trade data from specified database"""
+    if not os.path.exists(db_name):
+        st.error(f"Database file '{db_name}' not found!")
+        return pd.DataFrame()
+    
+    if not validate_database(db_name):
+        st.error(f"Database '{db_name}' does not have the required 'trades' table!")
+        return pd.DataFrame()
+    
+    try:
+        conn = sqlite3.connect(db_name)
+        query = "SELECT * FROM trades ORDER BY timestamp DESC"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        
+        if df.empty:
+            st.warning(f"No trading data found in '{db_name}'")
+            return df
+        
+        # 타임스탬프 처리
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        # 포트폴리오 가치 계산
+        df['portfolio_value'] = df['krw_balance'] + (df['crypto_balance'] * df['crypto_price'])
+
+        # 수익률 계산 (첫 거래 기준)
+        if len(df) > 0:
+            first_trade = df.iloc[-1]
+            df['profit_loss'] = df['portfolio_value'] - first_trade['portfolio_value']
+            df['profit_loss_pct'] = (df['profit_loss'] / first_trade['portfolio_value']) * 100
+        
+        # Check data freshness and send notification if needed
+        check_database_freshness(db_name, df)
+        
+        return df
+    except Exception as e:
+        st.error(f"Error loading data from '{db_name}': {str(e)}")
+        return pd.DataFrame()
+
+# 헤더
+st.title("Crypto AI Trading Dashboard")
+
+# Database selection sidebar
+with st.sidebar:
+    st.header("📊 Database Selection")
+    
+    # Get available databases
+    available_dbs = get_available_databases()
+    
+    # Database selector
+    selected_db = st.selectbox(
+        "Select Database:",
+        available_dbs,
+        index=0,
+        help="Choose which database file to analyze"
+    )
+    
+    # Display database info
+    if os.path.exists(selected_db):
+        file_size = os.path.getsize(selected_db)
+        st.info(f"**File:** {selected_db}\n**Size:** {file_size:,} bytes")
+        
+        # Show number of trades
+        try:
+            conn = sqlite3.connect(selected_db)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM trades")
+            trade_count = cursor.fetchone()[0]
+            
+            # Get latest trade timestamp for freshness check
+            cursor.execute("SELECT MAX(timestamp) FROM trades")
+            latest_timestamp_str = cursor.fetchone()[0]
+            conn.close()
+            
+            st.success(f"**Trades:** {trade_count}")
+            
+            # Show data freshness
+            if latest_timestamp_str:
+                latest_timestamp = pd.to_datetime(latest_timestamp_str)
+                current_time = datetime.now()
+                
+                # Convert to timezone-naive if needed
+                if latest_timestamp.tz is not None:
+                    latest_timestamp = latest_timestamp.tz_convert(None)
+                
+                time_diff = current_time - latest_timestamp
+                hours_since_update = time_diff.total_seconds() / 3600
+                
+                if hours_since_update > STALE_DATA_THRESHOLD_HOURS:
+                    st.error(f"⚠️ **Data Age:** {hours_since_update:.1f} hours (STALE)")
+                    st.caption(f"Last update: {latest_timestamp.strftime('%Y-%m-%d %H:%M')}")
+                elif hours_since_update > 2:
+                    st.warning(f"⏰ **Data Age:** {hours_since_update:.1f} hours")
+                    st.caption(f"Last update: {latest_timestamp.strftime('%Y-%m-%d %H:%M')}")
+                else:
+                    st.success(f"✅ **Data Fresh:** {hours_since_update:.1f} hours ago")
+            else:
+                st.info("No trade data available")
                 
         except Exception as e:
-            error_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error reading output: {str(e)}"
-            st.session_state.output_buffer.append(error_msg)
-
-def parse_trading_decision(output):
-    """Parse output to extract trading decisions and add to bulletin board"""
-    try:
-        # Look for AI Decision lines
-        if "AI Decision:" in output:
-            decision_info = output.split("AI Decision:")[1].strip()
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Extract decision and percentage
-            if "BUY" in decision_info:
-                action = "🟢 BUY"
-            elif "SELL" in decision_info:
-                action = "🔴 SELL"
-            elif "HOLD" in decision_info:
-                action = "🟡 HOLD"
-            else:
-                action = "❓ UNKNOWN"
-            
-            percentage = decision_info.split("%")[0].split()[-1] if "%" in decision_info else "N/A"
-            
-            st.session_state.trading_decisions.append({
-                "timestamp": timestamp,
-                "action": action,
-                "percentage": percentage + "%",
-                "reason": "",
-                "trade_amount": ""
-            })
-            
-        # Look for reason lines
-        elif "Reason:" in output:
-            reason = output.split("Reason:")[1].strip()
-            if st.session_state.trading_decisions:
-                st.session_state.trading_decisions[-1]["reason"] = reason
-                
-        # Look for actual trade executions
-        elif any(phrase in output.lower() for phrase in ["buying", "selling", "buy order result", "sell order result"]):
-            if st.session_state.trading_decisions:
-                current_trade = st.session_state.trading_decisions[-1]["trade_amount"]
-                if not current_trade:
-                    st.session_state.trading_decisions[-1]["trade_amount"] = output
-                else:
-                    st.session_state.trading_decisions[-1]["trade_amount"] += f"\n{output}"
-        
-        # Keep only last 20 decisions
-        if len(st.session_state.trading_decisions) > 20:
-            st.session_state.trading_decisions.pop(0)
-            
-        # Save state after parsing decisions
-        save_state()
-            
-    except Exception as e:
-        pass  # Silently handle parsing errors
-
-def start_trading():
-    """Start the auto trading process"""
-    try:
-        # Start the process with time interval argument
-        st.session_state.process = subprocess.Popen(
-            [sys.executable, "autotrade_dashboard.py", str(st.session_state.trade_interval)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            cwd=os.path.dirname(os.path.abspath(__file__))
-        )
-        st.session_state.trading_active = True
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.output_buffer.append(f"[{timestamp}] Auto trading started with {st.session_state.trade_interval} minute intervals!")
-        
-        # Save state immediately after starting
-        save_state()
-        return True
-    except Exception as e:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.output_buffer.append(f"[{timestamp}] Error starting trading: {str(e)}")
-        return False
-
-def stop_trading():
-    """Stop the auto trading process"""
-    try:
-        if st.session_state.process:
-            if hasattr(st.session_state.process, 'pid'):
-                # If it's a real process, terminate it
-                if hasattr(st.session_state.process, 'terminate'):
-                    st.session_state.process.terminate()
-                    st.session_state.process.wait(timeout=5)
-                else:
-                    # If it's a mock process from reconnection, kill by PID
-                    os.kill(st.session_state.process.pid, signal.SIGTERM)
-            st.session_state.process = None
-        
-        st.session_state.trading_active = False
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.output_buffer.append(f"[{timestamp}] Auto trading stopped!")
-        
-        # Remove PID file
-        if os.path.exists(PROCESS_PID_FILE):
-            os.remove(PROCESS_PID_FILE)
-        
-        # Save state after stopping
-        save_state()
-        return True
-    except Exception as e:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.output_buffer.append(f"[{timestamp}] Error stopping trading: {str(e)}")
-        return False
-
-# Main dashboard layout
-st.title("🚀 Crypto Auto Trading Dashboard")
-st.markdown("---")
-
-# Sidebar controls
-with st.sidebar:
-    st.header("🎛️ Trading Controls")
-    
-    # Status indicator
-    if st.session_state.trading_active:
-        st.success("🟢 Trading Active")
-        if os.path.exists(PROCESS_PID_FILE):
-            with open(PROCESS_PID_FILE, 'r') as f:
-                pid = f.read().strip()
-                st.caption(f"Process PID: {pid}")
+            st.warning(f"Could not read database info: {str(e)}")
     else:
-        st.error("🔴 Trading Stopped")
+        st.error("Database file not found!")
     
     st.markdown("---")
     
-    # Control buttons
+    # Refresh button
+    if st.button("🔄 Refresh Database List"):
+        st.rerun()
+    
+    # Notification settings
+    st.subheader("📱 Stale Data Notifications")
+    
+    # Check if Slack is configured
+    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_user_id = os.getenv("SLACK_USER_ID")
+    
+    if slack_token:
+        client = WebClient(token=slack_token)
+        
+        # Try to get user info
+        user_id, username = get_slack_user_info(client)
+        
+        if user_id:
+            st.success("✅ Slack bot token valid")
+            st.info(f"🤖 Bot connected as: {username}")
+            st.info(f"👤 Your user ID: `{user_id}`")
+                
+            st.info(f"🕒 Alert threshold: {STALE_DATA_THRESHOLD_HOURS} hours")
+            
+            # Show notification status for current database
+            notification_state = load_notification_state()
+            last_notification_key = f"{selected_db}_last_notification"
+            
+            if last_notification_key in notification_state:
+                last_notification_str = notification_state[last_notification_key]
+                try:
+                    last_notification = datetime.fromisoformat(last_notification_str)
+                    st.caption(f"Last alert sent: {last_notification.strftime('%Y-%m-%d %H:%M')}")
+                except:
+                    pass
+            
+            # Test notification button
+            if st.button("🧪 Test Slack Notification"):
+                success = send_stale_data_notification(
+                    f"TEST_{selected_db}", 
+                    datetime.now() - timedelta(hours=6), 
+                    6.0
+                )
+                if success:
+                    st.success("Test notification sent!")
+                else:
+                    st.error("Failed to send test notification")
+        else:
+            st.error("❌ Invalid Slack bot token")
+            st.caption("Check your SLACK_BOT_TOKEN in .env file")
+    else:
+        st.warning("⚠️ Slack not configured")
+        st.markdown("""
+        **Setup Instructions:**
+        1. Create a Slack app at https://api.slack.com/apps
+        2. Add Bot Token Scopes: `chat:write`, `users:read`, `conversations:read`
+        3. Install app to your workspace
+        4. Get Bot User OAuth Token (starts with `xoxb-`)
+        5. Add to .env file:
+        ```
+        SLACK_BOT_TOKEN=xoxb-your-token-here
+        SLACK_USER_ID=your-user-id-here
+        ```
+        """)
+        
+        if st.button("🔍 Test Bot Token Only"):
+            test_token = st.text_input("Enter bot token to test:", type="password")
+            if test_token:
+                try:
+                    test_client = WebClient(token=test_token)
+                    user_id, username = get_slack_user_info(test_client)
+                    if user_id:
+                        st.success(f"✅ Token valid! User: {username}, ID: {user_id}")
+                    else:
+                        st.error("❌ Invalid token")
+                except Exception as e:
+                    st.error(f"❌ Token test failed: {str(e)}")
+
+# 데이터 로드
+df = load_trade_data(selected_db)
+
+# 최신 거래 정보
+if not df.empty:
+    latest = df.iloc[0]
+    
+    # 수익률 계산
+    first_trade = df.iloc[-1]
+    total_profit_pct = latest['profit_loss_pct']
+    
+    # Database info header
+    col_info1, col_info2, col_info3 = st.columns(3)
+    with col_info1:
+        st.info(f"📊 **Database:** {selected_db}")
+    with col_info2:
+        st.info(f"📈 **Total Trades:** {len(df)}")
+    with col_info3:
+        date_range = f"{df['timestamp'].min().strftime('%Y-%m-%d')} to {df['timestamp'].max().strftime('%Y-%m-%d')}"
+        st.info(f"📅 **Period:** {date_range}")
+    
+    # 2개 컬럼으로 주요 정보 표시
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("▶️ Start Trading", disabled=st.session_state.trading_active, use_container_width=True):
-            if start_trading():
-                st.rerun()
+        st.metric(
+            "포트폴리오 가치", 
+            f"₩{latest['portfolio_value']:,.0f}",
+            delta=f"{total_profit_pct:.2f}%"
+        )
     
     with col2:
-        if st.button("⏹️ Stop Trading", disabled=not st.session_state.trading_active, use_container_width=True):
-            if stop_trading():
-                st.rerun()
+        st.metric(
+            "최근 거래", 
+            f"{latest['decision'].upper()} ({latest['percentage']}%)",
+            delta=f"{latest['timestamp'].strftime('%Y-%m-%d %H:%M')}"
+        )
     
-    st.markdown("---")
+    # Crypto 및 현금 잔고
+    st.markdown(f"""
+    **Crypto 잔고:** {latest['crypto_balance']:.6f} Crypto (₩{latest['crypto_balance'] * latest['crypto_price']:,.0f})  
+    **KRW 잔고:** ₩{latest['krw_balance']:,.0f}
+    """)
+else:
+    st.info(f"📂 Selected database: **{selected_db}**")
+    st.warning("No trading data available in the selected database.")
+    st.markdown("""
+    **Possible reasons:**
+    - This is a new database with no trades yet
+    - The trading bot hasn't started recording trades
+    - The database file is corrupted
     
-    # Time interval controller
-    st.subheader("⏰ Trading Interval")
-    interval_options = {
-        "5 minutes": 5,
-        "15 minutes": 15,
-        "30 minutes": 30,
-        "1 hour": 60,
-        "2 hours": 120,
-        "4 hours": 240,
-        "12 hours": 720,
-        "24 hours": 1440
-    }
+    **Next steps:**
+    - Start the trading bot to generate data
+    - Select a different database with existing data
+    - Create a new database for fresh trading sessions
+    """)
+
+# 수익률 차트 (Plotly)
+if not df.empty and len(df) > 1:
+    st.subheader("수익률 변화")
     
-    # Find current selection
-    current_key = None
-    for key, value in interval_options.items():
-        if value == st.session_state.trade_interval:
-            current_key = key
-            break
-    if current_key is None:
-        current_key = "1 hour"  # fallback
+    # 시간순으로 정렬
+    df_sorted = df.sort_values('timestamp')
     
-    selected_interval = st.selectbox(
-        "Select trading interval:",
-        options=list(interval_options.keys()),
-        index=list(interval_options.keys()).index(current_key),
-        disabled=st.session_state.trading_active,
-        help="Trading interval can only be changed when trading is stopped"
+    # 기본 수익률 라인 차트 생성
+    fig = go.Figure()
+    
+    # 0% 라인 추가
+    fig.add_hline(y=0, line=dict(color='gray', width=1, dash='dash'))
+    
+    # 수익률 라인 추가
+    fig.add_trace(go.Scatter(
+        x=df_sorted['timestamp'], 
+        y=df_sorted['profit_loss_pct'],
+        mode='lines+markers',
+        name='수익률',
+        line=dict(color='blue', width=2),
+        marker=dict(size=8)
+    ))
+    
+    # 매수/매도 포인트 추가
+    for decision, color in [('buy', 'green'), ('sell', 'red'), ('hold', 'orange')]:
+        decision_df = df_sorted[df_sorted['decision'] == decision]
+        if not decision_df.empty:
+            fig.add_trace(go.Scatter(
+                x=decision_df['timestamp'],
+                y=decision_df['profit_loss_pct'],
+                mode='markers',
+                name=decision.upper(),
+                marker=dict(color=color, size=12, symbol='circle')
+            ))
+    
+    # 차트 레이아웃 설정
+    fig.update_layout(
+        title='첫 거래 대비 수익률 변화',
+        xaxis_title='날짜',
+        yaxis_title='수익률 (%)',
+        hovermode='x unified',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        height=500,
+        margin=dict(l=40, r=40, t=60, b=40)
     )
     
-    # Update interval if changed
-    new_interval = interval_options[selected_interval]
-    if new_interval != st.session_state.trade_interval:
-        st.session_state.trade_interval = new_interval
-        save_state()
+    # 호버 정보 커스터마이징
+    fig.update_traces(
+        hovertemplate='%{x}<br>수익률: %{y:.2f}%<br>'
+    )
     
-    if st.session_state.trading_active:
-        st.info(f"⚡ Current interval: {selected_interval}")
-    else:
-        st.success(f"✅ Next trading will use: {selected_interval}")
+    # y축 포맷 설정
+    fig.update_yaxes(ticksuffix='%')
     
-    st.markdown("---")
-    
-    # Configuration info
-    st.subheader("📊 Current Configuration")
-    try:
-        # Read target info from autotrade.py
-        with open("autotrade.py", "r") as f:
-            content = f.read()
-            if 'target = "' in content:
-                target_line = [line for line in content.split('\n') if line.strip().startswith('target = "')][0]
-                target = target_line.split('"')[1]
-                st.info(f"**Target:** {target}")
-    except:
-        st.warning("Could not read configuration")
-    
-    # State persistence info
-    st.subheader("💾 Session Persistence")
-    if os.path.exists(TRADING_STATE_FILE):
-        with open(TRADING_STATE_FILE, 'r') as f:
-            state_data = json.load(f)
-            last_update = state_data.get("last_update", "Unknown")
-            st.success(f"✅ State saved")
-            st.caption(f"Last update: {last_update[:19]}")
-    else:
-        st.warning("No saved state")
-    
-    # Clear all data button
-    if st.button("🗑️ Clear All Data", use_container_width=True):
-        # Clear session state
-        st.session_state.output_buffer = []
-        st.session_state.trading_decisions = []
-        
-        # Clear saved files
-        for file_path in [TRADING_STATE_FILE, OUTPUT_BUFFER_FILE, DECISIONS_FILE, PROCESS_PID_FILE]:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        
-        st.success("All data cleared!")
-        st.rerun()
+    st.plotly_chart(fig, use_container_width=True)
 
-# Main content area
-col1, col2 = st.columns([3, 2])
-
-with col1:
-    # Create tabs for different views
-    tab1, tab2 = st.tabs(["📊 Trading Decisions", "📋 Full Output Console"])
+# Crypto 가격 차트 (Plotly)
+if not df.empty:
+    st.subheader("Crypto 가격 변화")
     
-    with tab1:
-        st.header("📊 Trading Decisions & Results")
+    # 시간순으로 정렬
+    df_sorted = df.sort_values('timestamp')
+
+    # 기본 Crypto 가격 차트 생성
+    fig = go.Figure()
+
+    # Crypto 가격 라인 추가
+    fig.add_trace(go.Scatter(
+        x=df_sorted['timestamp'], 
+        y=df_sorted['crypto_price'],
+        mode='lines+markers',
+        name='Crypto 가격',
+        line=dict(color='orange', width=2),
+        marker=dict(size=6)
+    ))
+    
+    # 매수/매도 포인트 추가
+    for decision, color, symbol in [('buy', 'green', 'triangle-up'), ('sell', 'red', 'triangle-down')]:
+        decision_df = df_sorted[df_sorted['decision'] == decision]
+        if not decision_df.empty:
+            fig.add_trace(go.Scatter(
+                x=decision_df['timestamp'],
+                y=decision_df['crypto_price'],
+                mode='markers',
+                name=decision.upper(),
+                marker=dict(color=color, size=14, symbol=symbol)
+            ))
+    
+    # 차트 레이아웃 설정
+    fig.update_layout(
+        title='Crypto 가격 변화와 거래 결정',
+        xaxis_title='날짜',
+        yaxis_title='Crypto 가격 (KRW)',
+        hovermode='x unified',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        height=500,
+        margin=dict(l=40, r=40, t=60, b=40)
+    )
+    
+    # 호버 정보 커스터마이징
+    fig.update_traces(
+        hovertemplate='%{x}<br>가격: ₩%{y:,.0f}<br>'
+    )
+    
+    # y축 포맷 설정
+    fig.update_yaxes(tickformat=',.0f')
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+# 매매 내역 테이블
+st.subheader("매매 내역")
+
+if not df.empty:
+    # 표시할 컬럼 선택 및 새 DataFrame 생성 (복사 대신)
+    display_df = pd.DataFrame({
+        '시간': df['timestamp'].dt.strftime('%Y-%m-%d %H:%M'),
+        '결정': df['decision'].str.upper(),
+        '비율(%)': df['percentage'],
+        'Crypto 가격(KRW)': df['crypto_price'].apply(lambda x: f"{x:,.0f}"),
+        'Crypto 잔고': df['crypto_balance'],
+        'KRW 잔고': df['krw_balance'].apply(lambda x: f"{x:,.0f}"),
+        '수익률(%)': df['profit_loss_pct'].apply(lambda x: f"{x:.2f}")
+    })
+    
+    # 스타일링된 데이터프레임
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            # "결정": st.column_config.SelectboxColumn(
+            #     width="small",
+            # ),
+            "비율(%)": st.column_config.NumberColumn(
+                format="%.1f%%",
+                width="small",
+            ),
+            "수익률(%)": st.column_config.NumberColumn(
+                format="%.2f%%",
+                width="medium",
+            ),
+        }
+    )
+
+# 거래 상세 정보
+st.subheader("최근 거래 상세 정보")
+
+if not df.empty:
+        selected_idx = st.selectbox("거래 선택:", 
+                                     range(len(df)), 
+                                     format_func=lambda i: f"{df.iloc[i]['timestamp'].strftime('%Y-%m-%d %H:%M')} - {df.iloc[i]['decision'].upper()}")
         
-        if st.session_state.trading_decisions:
-            # Display trading decisions in a clean format
-            for i, decision in enumerate(reversed(st.session_state.trading_decisions[-10:])):  # Show last 10
-                with st.expander(f"{decision['action']} - {decision['timestamp']}", expanded=(i==0)):
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.metric("Action", decision['action'])
-                        st.metric("Percentage", decision['percentage'])
-                    with col_b:
-                        if decision['reason']:
-                            st.markdown(f"**Reason:** {decision['reason']}")
-                        if decision['trade_amount']:
-                            st.markdown(f"**Trade Details:**\n```\n{decision['trade_amount']}\n```")
-        else:
-            st.info("No trading decisions yet. Start trading to see AI decisions and results here.")
-    
-    with tab2:
-        st.header("📋 Full Output Console")
+        selected_trade = df.iloc[selected_idx]
         
-        # Auto-refresh the output
-        if st.session_state.trading_active:
-            capture_output_from_process()
-            
-            # Show warning if connected to mock process
-            if (st.session_state.process and 
-                not hasattr(st.session_state.process, 'stdout') or 
-                st.session_state.process.stdout is None):
-                st.warning("⚠️ Connected to existing process - live output capture not available. Process is running but new logs won't appear here.")
+        # 거래 상세 정보
+        st.markdown(f"""
+        ### {selected_trade['timestamp'].strftime('%Y-%m-%d %H:%M')} 거래 세부사항
         
-        # Display output in a container
-        output_container = st.container()
-        with output_container:
-            if st.session_state.output_buffer:
-                # Display last 30 lines in reverse order (newest first)
-                recent_output = st.session_state.output_buffer[-30:]
-                output_text = "\n".join(reversed(recent_output))
-                st.code(output_text, language="text", line_numbers=False)
-            else:
-                st.info("No output yet. Start trading to see live updates.")
+        **결정:** {selected_trade['decision'].upper()} {selected_trade['percentage']*100}%  
+        **Crypto 가격:** ₩{selected_trade['crypto_price']:,.0f}  
+        **거래 후 Crypto 잔고:** {selected_trade['crypto_balance']:.8f} Crypto  
+        **거래 후 KRW 잔고:** ₩{selected_trade['krw_balance']:,.0f}  
+        **포트폴리오 가치:** ₩{selected_trade['portfolio_value']:,.0f}  
+        **수익률:** {selected_trade['profit_loss_pct']:.2f}%
 
-with col2:
-    st.header("📈 Trading Summary")
-    
-    # Trading statistics
-    total_decisions = len(st.session_state.trading_decisions)
-    buy_count = sum(1 for d in st.session_state.trading_decisions if "BUY" in d['action'])
-    sell_count = sum(1 for d in st.session_state.trading_decisions if "SELL" in d['action'])
-    hold_count = sum(1 for d in st.session_state.trading_decisions if "HOLD" in d['action'])
-    
-    st.metric("Total Decisions", total_decisions)
-    st.metric("Buy Decisions", buy_count)
-    st.metric("Sell Decisions", sell_count)
-    st.metric("Hold Decisions", hold_count)
-    
-    st.markdown("---")
-    
-    # Latest decision summary
-    st.subheader("🎯 Latest Decision")
-    if st.session_state.trading_decisions:
-        latest = st.session_state.trading_decisions[-1]
-        st.markdown(f"**Action:** {latest['action']}")
-        st.markdown(f"**Percentage:** {latest['percentage']}")
-        st.markdown(f"**Time:** {latest['timestamp']}")
-        if latest['reason']:
-            st.markdown(f"**Reason:** {latest['reason'][:100]}...")
-    else:
-        st.info("No decisions yet")
+        **AI 판단 이유**        
+        {selected_trade['reason']}
+        """)
 
-# Auto-refresh mechanism
-if st.session_state.trading_active:
-    # Show a status indicator for active trading
-    with st.empty():
-        st.info("🔄 Trading is active - Dashboard auto-refreshing every 5 seconds")
-    
-    # Save state periodically during active trading
-    save_state()
-    
-    # Auto-refresh every 5 seconds when trading is active
-    time.sleep(5)
-    st.rerun()
-else:
-    # Manual refresh button when not trading
-    if st.button("🔄 Refresh Dashboard"):
-        st.rerun()
-
-# Footer
+# Database Comparison Section
 st.markdown("---")
-st.markdown("*Dashboard state is automatically saved and restored across browser sessions*")
+st.subheader("📊 Database Comparison")
+
+# Get available databases again for comparison
+available_dbs = get_available_databases()
+
+if len(available_dbs) > 1:
+    st.markdown("Compare performance across different trading sessions:")
+    
+    # Multi-select for databases to compare
+    selected_dbs_for_comparison = st.multiselect(
+        "Select databases to compare:",
+        available_dbs,
+        default=[selected_db] if selected_db in available_dbs else [],
+        help="Choose multiple databases to compare their performance"
+    )
+    
+    if len(selected_dbs_for_comparison) > 1:
+        comparison_data = []
+        
+        for db in selected_dbs_for_comparison:
+            if os.path.exists(db) and validate_database(db):
+                try:
+                    temp_df = load_trade_data(db)
+                    if not temp_df.empty:
+                        latest_trade = temp_df.iloc[0]
+                        first_trade = temp_df.iloc[-1]
+                        
+                        comparison_data.append({
+                            'Database': db,
+                            'Total Trades': len(temp_df),
+                            'Start Date': first_trade['timestamp'].strftime('%Y-%m-%d'),
+                            'End Date': latest_trade['timestamp'].strftime('%Y-%m-%d'),
+                            'Final Portfolio Value': f"₩{latest_trade['portfolio_value']:,.0f}",
+                            'Total Return (%)': f"{latest_trade['profit_loss_pct']:.2f}%",
+                            'Buy Trades': len(temp_df[temp_df['decision'] == 'buy']),
+                            'Sell Trades': len(temp_df[temp_df['decision'] == 'sell']),
+                            'Hold Trades': len(temp_df[temp_df['decision'] == 'hold'])
+                        })
+                except Exception as e:
+                    st.warning(f"Could not load data from {db}: {str(e)}")
+        
+        if comparison_data:
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(
+                comparison_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Total Return (%)": st.column_config.TextColumn(
+                        width="medium",
+                    ),
+                    "Final Portfolio Value": st.column_config.TextColumn(
+                        width="large",
+                    ),
+                }
+            )
+            
+            # Performance comparison chart
+            if len(comparison_data) > 1:
+                st.subheader("📈 Performance Comparison")
+                
+                # Extract return percentages for chart
+                returns = []
+                db_names = []
+                for item in comparison_data:
+                    try:
+                        return_pct = float(item['Total Return (%)'].replace('%', ''))
+                        returns.append(return_pct)
+                        db_names.append(item['Database'])
+                    except:
+                        continue
+                
+                if returns:
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=db_names,
+                            y=returns,
+                            marker_color=['green' if r >= 0 else 'red' for r in returns],
+                            text=[f"{r:.2f}%" for r in returns],
+                            textposition='auto',
+                        )
+                    ])
+                    
+                    fig.update_layout(
+                        title='Total Return Comparison Across Databases',
+                        xaxis_title='Database',
+                        yaxis_title='Total Return (%)',
+                        yaxis=dict(ticksuffix='%'),
+                        height=400
+                    )
+                    
+                    # Add horizontal line at 0%
+                    fig.add_hline(y=0, line=dict(color='gray', width=1, dash='dash'))
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No valid data found in selected databases for comparison.")
+    elif len(selected_dbs_for_comparison) == 1:
+        st.info("Select at least 2 databases to see comparison.")
+else:
+    st.info("Only one database available. Create more databases to enable comparison features.")
+
+# Database Monitoring Section
+st.markdown("---")
+st.subheader("🔍 Database Monitoring")
+
+st.markdown("Monitor data freshness across all databases:")
+
+# Create monitoring table
+monitoring_data = []
+available_dbs = get_available_databases()
+
+for db in available_dbs:
+    if os.path.exists(db) and validate_database(db):
+        try:
+            conn = sqlite3.connect(db)
+            cursor = conn.cursor()
+            
+            # Get latest timestamp and trade count
+            cursor.execute("SELECT MAX(timestamp), COUNT(*) FROM trades")
+            result = cursor.fetchone()
+            latest_timestamp_str, trade_count = result
+            conn.close()
+            
+            if latest_timestamp_str and trade_count > 0:
+                latest_timestamp = pd.to_datetime(latest_timestamp_str)
+                current_time = datetime.now()
+                
+                # Convert to timezone-naive if needed
+                if latest_timestamp.tz is not None:
+                    latest_timestamp = latest_timestamp.tz_convert(None)
+                
+                time_diff = current_time - latest_timestamp
+                hours_since_update = time_diff.total_seconds() / 3600
+                
+                # Determine status
+                if hours_since_update > STALE_DATA_THRESHOLD_HOURS:
+                    status = "🔴 STALE"
+                    status_color = "red"
+                elif hours_since_update > 2:
+                    status = "🟡 OLD"
+                    status_color = "orange"
+                else:
+                    status = "🟢 FRESH"
+                    status_color = "green"
+                
+                monitoring_data.append({
+                    'Database': db,
+                    'Status': status,
+                    'Trades': trade_count,
+                    'Last Update': latest_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    'Hours Ago': f"{hours_since_update:.1f}",
+                    'File Size (KB)': f"{os.path.getsize(db) / 1024:.1f}"
+                })
+            else:
+                monitoring_data.append({
+                    'Database': db,
+                    'Status': "⚪ EMPTY",
+                    'Trades': 0,
+                    'Last Update': "No data",
+                    'Hours Ago': "N/A",
+                    'File Size (KB)': f"{os.path.getsize(db) / 1024:.1f}"
+                })
+                
+        except Exception as e:
+            monitoring_data.append({
+                'Database': db,
+                'Status': "❌ ERROR",
+                'Trades': "Error",
+                'Last Update': f"Error: {str(e)[:30]}...",
+                'Hours Ago': "N/A",
+                'File Size (KB)': "N/A"
+            })
+
+if monitoring_data:
+    monitoring_df = pd.DataFrame(monitoring_data)
+    
+    # Display monitoring table
+    st.dataframe(
+        monitoring_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Status": st.column_config.TextColumn(
+                width="small",
+            ),
+            "Hours Ago": st.column_config.NumberColumn(
+                format="%.1f",
+                width="small",
+            ),
+            "File Size (KB)": st.column_config.TextColumn(
+                width="small",
+            ),
+        }
+    )
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    fresh_count = len([d for d in monitoring_data if "🟢" in d['Status']])
+    old_count = len([d for d in monitoring_data if "🟡" in d['Status']])
+    stale_count = len([d for d in monitoring_data if "🔴" in d['Status']])
+    error_count = len([d for d in monitoring_data if "❌" in d['Status']])
+    
+    with col1:
+        st.metric("🟢 Fresh", fresh_count)
+    with col2:
+        st.metric("🟡 Old", old_count)
+    with col3:
+        st.metric("🔴 Stale", stale_count)
+    with col4:
+        st.metric("❌ Errors", error_count)
+    
+    # Auto-refresh option
+    st.markdown("---")
+    auto_refresh = st.checkbox("🔄 Auto-refresh every 30 seconds", value=False)
+    
+    if auto_refresh:
+        import time
+        time.sleep(30)
+        st.rerun()
+else:
+    st.warning("No databases found for monitoring.")

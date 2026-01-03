@@ -37,18 +37,18 @@ start_in_terminal() {
 }
 
 echo "📈 Starting multi-crypto trading bot in new terminal..."
-start_in_terminal "Multi-Crypto Trading Bot" "python autotrade_multi.py"
+start_in_terminal "Multi-Crypto Trading Bot" "python autotrade.py"
 
 echo "⏳ Waiting 3 seconds for trading bot to initialize..."
 sleep 3
 
 echo "📊 Starting dashboard in new terminal..."
-start_in_terminal "Trading Dashboard" "streamlit run autotrade_dashboard.py --server.headless true"
+start_in_terminal "Trading Dashboard" "streamlit run dashboard.py --server.headless true"
 
 
 echo ""
 echo "🎉 Both services have been started in separate terminals!"
-echo "📈 Multi-Crypto Trading Bot: Running autotrade_multi.py (ETH + XRP)"
+echo "📈 Multi-Crypto Trading Bot: Running autotrade.py (ETH + XRP)"
 echo "📊 Dashboard: Available at http://localhost:8501"
 echo ""
 echo "💡 To stop the services:"
