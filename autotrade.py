@@ -203,8 +203,22 @@ _{reason}_
         print(f"💰 {self.crypto_symbol}: Fetching current balance...")
         upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
         
-        my_krw = upbit.get_balance("KRW") or 0.0
-        my_crypto = upbit.get_balance(self.crypto_symbol) or 0.0
+        # Verify API connection first
+        try:
+            balances = upbit.get_balances()
+            if isinstance(balances, dict) and 'error' in balances:
+                error_msg = balances['error'].get('message', 'Unknown error')
+                error_name = balances['error'].get('name', '')
+                print(f"⚠️ {self.crypto_symbol}: Upbit API error: {error_msg} ({error_name})")
+                my_krw = 0.0
+                my_crypto = 0.0
+            else:
+                my_krw = upbit.get_balance("KRW") or 0.0
+                my_crypto = upbit.get_balance(self.crypto_symbol) or 0.0
+        except Exception as e:
+            print(f"⚠️ {self.crypto_symbol}: Failed to fetch balance: {e}")
+            my_krw = 0.0
+            my_crypto = 0.0
         
         try:
             current_price = pyupbit.get_orderbook(self.ticker)['orderbook_units'][0]['ask_price']

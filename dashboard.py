@@ -1,825 +1,579 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-
 import os
-import glob
+import json
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
-import json
 
-# 페이지 설정
+# ──────────────────────────────────────────────────────────────────────
+# Page config
+# ──────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Crypto AI Trading Dashboard",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
 )
 
-# Configuration
-STALE_DATA_THRESHOLD_HOURS = 7  # Hours after which data is considered stale
+# ──────────────────────────────────────────────────────────────────────
+# Constants & helpers
+# ──────────────────────────────────────────────────────────────────────
+STALE_DATA_THRESHOLD_HOURS = 7
 NOTIFICATION_STATE_FILE = "dashboard_state/notification_tracking.json"
+CONFIG_FILE = "config_coins.json"
 
-# Ensure state directory exists
 os.makedirs("dashboard_state", exist_ok=True)
 
+# Coin colour palette (deterministic per symbol)
+COIN_COLORS = {
+    "BTC": "#F7931A",
+    "ETH": "#627EEA",
+    "XRP": "#00AAE4",
+    "SOL": "#9945FF",
+    "ADA": "#0033AD",
+    "DOT": "#E6007A",
+    "DOGE": "#C2A633",
+    "AVAX": "#E84142",
+}
+DEFAULT_COLORS = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3"]
+
+
+def coin_color(symbol: str, idx: int = 0) -> str:
+    return COIN_COLORS.get(symbol, DEFAULT_COLORS[idx % len(DEFAULT_COLORS)])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Config loading
+# ──────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=30)
+def load_coin_config():
+    """Load coin configuration from config_coins.json."""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            cfg = json.load(f)
+        return {
+            sym: info
+            for sym, info in cfg.get("coins", {}).items()
+            if info.get("enabled", False)
+        }
+    except Exception as e:
+        st.error(f"Failed to load config: {e}")
+        return {}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Notification helpers (kept from original)
+# ──────────────────────────────────────────────────────────────────────
 def load_notification_state():
-    """Load notification tracking state"""
     try:
         if os.path.exists(NOTIFICATION_STATE_FILE):
-            with open(NOTIFICATION_STATE_FILE, 'r') as f:
+            with open(NOTIFICATION_STATE_FILE, "r") as f:
                 return json.load(f)
-    except:
+    except Exception:
         pass
     return {}
 
-def save_notification_state(state):
-    """Save notification tracking state"""
-    try:
-        with open(NOTIFICATION_STATE_FILE, 'w') as f:
-            json.dump(state, f, indent=2)
-    except Exception as e:
-        st.error(f"Error saving notification state: {str(e)}")
 
-def get_slack_user_info(client):
-    """Get current user info from Slack API"""
+def save_notification_state(state):
     try:
-        response = client.auth_test()
-        return response.get("user_id"), response.get("user")
-    except Exception as e:
-        return None, None
+        with open(NOTIFICATION_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
 
 def send_stale_data_notification(db_name, last_update_time, hours_stale):
-    """Send Slack notification about stale database data"""
+    slack_token = os.getenv("SLACK_BOT_TOKEN")
+    slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
+    if not slack_token or not slack_channel_id:
+        return False
     try:
-        slack_token = os.getenv("SLACK_BOT_TOKEN")
-        slack_user_id = os.getenv("SLACK_USER_ID")
-        slack_channel_id = os.getenv("SLACK_CHANNEL_ID")
-
-        if not slack_token or not slack_user_id:
-            return False
-        
         client = WebClient(token=slack_token)
-        
-        message = f"""
-⚠️ *Trading Bot Alert - Stale Data Detected* ⚠️
-
-*Database:* `{db_name}`
-*Last Update:* {last_update_time.strftime('%Y-%m-%d %H:%M:%S')}
-*Hours Since Update:* {hours_stale:.1f} hours
-*Threshold:* {STALE_DATA_THRESHOLD_HOURS} hours
-
-🚨 **The trading bot may have stopped working!**
-
-*Possible Issues:*
-• Trading bot process has crashed
-• Database connection problems
-• System or network issues
-• Bot is in hold-only mode
-
-*Recommended Actions:*
-• Check if trading bot is still running
-• Review bot logs for errors
-• Restart the trading bot if needed
-• Verify system resources and connectivity
-
----
-_Crypto Auto Trading Dashboard Alert_ 🤖
-        """.strip()
-        
-        # Try using the user ID directly as a channel
-        response = client.chat_postMessage(
-            channel=slack_channel_id,
-            text=f"⚠️ Trading Bot Alert - No updates in {db_name} for {hours_stale:.1f} hours",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": message
-                    }
-                }
-            ]
+        message = (
+            f"⚠️ *Trading Bot Alert – Stale Data*\n"
+            f"*Database:* `{db_name}`\n"
+            f"*Last Update:* {last_update_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"*Hours Since Update:* {hours_stale:.1f}\n"
         )
-        
+        client.chat_postMessage(
+            channel=slack_channel_id,
+            text=message,
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": message}}],
+        )
         return True
-        
-    except SlackApiError as e:
-        st.error(f"Slack API error: {e.response['error']}")
+    except Exception:
         return False
-    except Exception as e:
-        st.error(f"Error sending Slack notification: {str(e)}")
-        return False
+
 
 def check_database_freshness(db_name, df):
-    """Check if database data is stale and send notification if needed"""
     if df.empty:
         return
-    
-    # Get the most recent trade timestamp
-    latest_timestamp = df['timestamp'].max()
-    current_time = datetime.now()
-    
-    # Convert to timezone-naive if needed
-    if latest_timestamp.tz is not None:
-        latest_timestamp = latest_timestamp.tz_convert(None)
-    
-    time_diff = current_time - latest_timestamp
-    hours_stale = time_diff.total_seconds() / 3600
-    
-    # Load notification tracking state
-    notification_state = load_notification_state()
-    
-    # Check if data is stale
-    if hours_stale > STALE_DATA_THRESHOLD_HOURS:
-        # Check if we already sent notification for this database
-        last_notification_key = f"{db_name}_last_notification"
-        last_notification_str = notification_state.get(last_notification_key)
-        
-        # Only send notification once per day to avoid spam
-        should_notify = True
-        if last_notification_str:
-            try:
-                last_notification = datetime.fromisoformat(last_notification_str)
-                time_since_last_notification = current_time - last_notification
-                if time_since_last_notification.total_seconds() < 24 * 3600:  # 24 hours
-                    should_notify = False
-            except:
-                pass
-        
-        if should_notify:
-            success = send_stale_data_notification(db_name, latest_timestamp, hours_stale)
-            if success:
-                # Update notification state
-                notification_state[last_notification_key] = current_time.isoformat()
-                save_notification_state(notification_state)
-                st.warning(f"📱 Sent stale data alert for {db_name} (no updates for {hours_stale:.1f} hours)")
-    else:
-        # Data is fresh, clear any previous notification tracking
-        last_notification_key = f"{db_name}_last_notification"
-        if last_notification_key in notification_state:
-            del notification_state[last_notification_key]
-            save_notification_state(notification_state)
-
-# Get all available database files
-def get_available_databases():
-    """Get all .db files in the current directory"""
-    db_files = glob.glob("*.db")
-    if not db_files:
-        # If no .db files found, create default
-        return ["coin_auto_trade.db"]
-    return sorted(db_files)
-
-# Check if database has the required table structure
-def validate_database(db_path):
-    """Check if the database has the required trades table"""
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trades'")
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
-    except:
-        return False
-
-# 데이터베이스 연결 및 데이터 로드
-def load_trade_data(db_name):
-    """Load trade data from specified database"""
-    if not os.path.exists(db_name):
-        st.error(f"Database file '{db_name}' not found!")
-        return pd.DataFrame()
-    
-    if not validate_database(db_name):
-        st.error(f"Database '{db_name}' does not have the required 'trades' table!")
-        return pd.DataFrame()
-    
-    try:
-        conn = sqlite3.connect(db_name)
-        query = "SELECT * FROM trades ORDER BY timestamp DESC"
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        
-        if df.empty:
-            st.warning(f"No trading data found in '{db_name}'")
-            return df
-        
-        # 타임스탬프 처리
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        
-        # 포트폴리오 가치 계산
-        df['portfolio_value'] = df['krw_balance'] + (df['crypto_balance'] * df['crypto_price'])
-
-        # 수익률 계산 (첫 거래 기준)
-        if len(df) > 0:
-            first_trade = df.iloc[-1]
-            df['profit_loss'] = df['portfolio_value'] - first_trade['portfolio_value']
-            df['profit_loss_pct'] = (df['profit_loss'] / first_trade['portfolio_value']) * 100
-        
-        # Check data freshness and send notification if needed
-        check_database_freshness(db_name, df)
-        
-        return df
-    except Exception as e:
-        st.error(f"Error loading data from '{db_name}': {str(e)}")
-        return pd.DataFrame()
-
-# 헤더
-st.title("Crypto AI Trading Dashboard")
-
-# Database selection sidebar
-with st.sidebar:
-    st.header("📊 Database Selection")
-    
-    # Get available databases
-    available_dbs = get_available_databases()
-    
-    # Database selector
-    selected_db = st.selectbox(
-        "Select Database:",
-        available_dbs,
-        index=0,
-        help="Choose which database file to analyze"
-    )
-    
-    # Display database info
-    if os.path.exists(selected_db):
-        file_size = os.path.getsize(selected_db)
-        st.info(f"**File:** {selected_db}\n**Size:** {file_size:,} bytes")
-        
-        # Show number of trades
+    latest_ts = df["timestamp"].max()
+    if latest_ts.tz is not None:
+        latest_ts = latest_ts.tz_convert(None)
+    hours_stale = (datetime.now() - latest_ts).total_seconds() / 3600
+    if hours_stale <= STALE_DATA_THRESHOLD_HOURS:
+        return
+    ns = load_notification_state()
+    key = f"{db_name}_last_notification"
+    should_notify = True
+    if ns.get(key):
         try:
-            conn = sqlite3.connect(selected_db)
+            if (datetime.now() - datetime.fromisoformat(ns[key])).total_seconds() < 86400:
+                should_notify = False
+        except Exception:
+            pass
+    if should_notify:
+        if send_stale_data_notification(db_name, latest_ts, hours_stale):
+            ns[key] = datetime.now().isoformat()
+            save_notification_state(ns)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Data loading
+# ──────────────────────────────────────────────────────────────────────
+def load_trade_data(db_name: str) -> pd.DataFrame:
+    """Load and enrich trade data from a single database."""
+    if not os.path.exists(db_name):
+        return pd.DataFrame()
+    try:
+        with sqlite3.connect(db_name) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM trades")
-            trade_count = cursor.fetchone()[0]
-            
-            # Get latest trade timestamp for freshness check
-            cursor.execute("SELECT MAX(timestamp) FROM trades")
-            latest_timestamp_str = cursor.fetchone()[0]
-            conn.close()
-            
-            st.success(f"**Trades:** {trade_count}")
-            
-            # Show data freshness
-            if latest_timestamp_str:
-                latest_timestamp = pd.to_datetime(latest_timestamp_str)
-                current_time = datetime.now()
-                
-                # Convert to timezone-naive if needed
-                if latest_timestamp.tz is not None:
-                    latest_timestamp = latest_timestamp.tz_convert(None)
-                
-                time_diff = current_time - latest_timestamp
-                hours_since_update = time_diff.total_seconds() / 3600
-                
-                if hours_since_update > STALE_DATA_THRESHOLD_HOURS:
-                    st.error(f"⚠️ **Data Age:** {hours_since_update:.1f} hours (STALE)")
-                    st.caption(f"Last update: {latest_timestamp.strftime('%Y-%m-%d %H:%M')}")
-                elif hours_since_update > 2:
-                    st.warning(f"⏰ **Data Age:** {hours_since_update:.1f} hours")
-                    st.caption(f"Last update: {latest_timestamp.strftime('%Y-%m-%d %H:%M')}")
-                else:
-                    st.success(f"✅ **Data Fresh:** {hours_since_update:.1f} hours ago")
-            else:
-                st.info("No trade data available")
-                
-        except Exception as e:
-            st.warning(f"Could not read database info: {str(e)}")
-    else:
-        st.error("Database file not found!")
-    
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+            )
+            if not cursor.fetchone():
+                return pd.DataFrame()
+            df = pd.read_sql_query("SELECT * FROM trades ORDER BY timestamp", conn)
+    except Exception:
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["portfolio_value"] = df["krw_balance"] + df["crypto_balance"] * df["crypto_price"]
+    if len(df) > 0:
+        first_val = df.iloc[0]["portfolio_value"]
+        df["profit_loss"] = df["portfolio_value"] - first_val
+        df["profit_loss_pct"] = (df["profit_loss"] / first_val) * 100 if first_val else 0
+
+    check_database_freshness(db_name, df)
+    return df
+
+
+@st.cache_data(ttl=60)
+def load_all_coin_data(_coins_config_json: str) -> dict:
+    """Load trade data for every enabled coin.  Returns {symbol: DataFrame}."""
+    coins_config = json.loads(_coins_config_json)
+    data = {}
+    for sym, info in coins_config.items():
+        db = info.get("db_name", "")
+        df = load_trade_data(db)
+        if not df.empty:
+            df["symbol"] = sym
+            data[sym] = df
+    return data
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Aggregate helpers
+# ──────────────────────────────────────────────────────────────────────
+def build_total_portfolio_series(all_data: dict) -> pd.DataFrame:
+    """
+    Build a time-series of total portfolio value.
+
+    Each coin records its own (krw_balance + crypto_value).  Since KRW
+    balance is shared across coins, we take the latest KRW balance
+    reported at each timestamp and add each coin's crypto value.
+    """
+    if not all_data:
+        return pd.DataFrame()
+
+    frames = []
+    for sym, df in all_data.items():
+        s = df.set_index("timestamp")[["crypto_balance", "crypto_price", "krw_balance"]].copy()
+        s[f"crypto_value_{sym}"] = s["crypto_balance"] * s["crypto_price"]
+        s = s.rename(columns={"krw_balance": f"krw_{sym}"})
+        s = s[[f"crypto_value_{sym}", f"krw_{sym}"]]
+        frames.append(s)
+
+    combined = pd.concat(frames, axis=1).sort_index().ffill().dropna()
+
+    if combined.empty:
+        return pd.DataFrame()
+
+    crypto_cols = [c for c in combined.columns if c.startswith("crypto_value_")]
+    krw_cols = [c for c in combined.columns if c.startswith("krw_")]
+
+    combined["total_crypto"] = combined[crypto_cols].sum(axis=1)
+    # KRW is shared – take max (they should be nearly identical at any point)
+    combined["krw"] = combined[krw_cols].max(axis=1)
+    combined["total_value"] = combined["total_crypto"] + combined["krw"]
+
+    result = combined[["total_value", "krw", "total_crypto"]].reset_index()
+    result = result.rename(columns={"index": "timestamp"})
+    return result
+
+
+def filter_by_time(df: pd.DataFrame, hours) -> pd.DataFrame:
+    """Filter dataframe to the last N hours.  None = all data."""
+    if hours is None or df.empty:
+        return df
+    cutoff = datetime.now() - timedelta(hours=hours)
+    return df[df["timestamp"] >= cutoff]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# UI
+# ──────────────────────────────────────────────────────────────────────
+coins_config = load_coin_config()
+all_data = load_all_coin_data(json.dumps(coins_config))
+
+st.title("📈 Crypto AI Trading Dashboard")
+
+if not all_data:
+    st.warning("No trading data found. Start the trading bot to generate data.")
+    st.stop()
+
+# ── Sidebar: settings & monitoring ──────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ Settings")
+
+    TIME_OPTIONS = {
+        "6h": 6,
+        "12h": 12,
+        "24h": 24,
+        "3d": 72,
+        "7d": 168,
+        "30d": 720,
+        "All": None,
+    }
+    selected_range_label = st.radio(
+        "Time Range (applies to all charts)",
+        list(TIME_OPTIONS.keys()),
+        index=3,  # default 3d
+        horizontal=True,
+    )
+    selected_hours = TIME_OPTIONS[selected_range_label]
+
     st.markdown("---")
-    
-    # Refresh button
-    if st.button("🔄 Refresh Database List"):
-        st.rerun()
-    
-    # Notification settings
-    st.subheader("📱 Stale Data Notifications")
-    
-    # Check if Slack is configured
-    slack_token = os.getenv("SLACK_BOT_TOKEN")
-    slack_user_id = os.getenv("SLACK_USER_ID")
-    
-    if slack_token:
-        client = WebClient(token=slack_token)
-        
-        # Try to get user info
-        user_id, username = get_slack_user_info(client)
-        
-        if user_id:
-            st.success("✅ Slack bot token valid")
-            st.info(f"🤖 Bot connected as: {username}")
-            st.info(f"👤 Your user ID: `{user_id}`")
-                
-            st.info(f"🕒 Alert threshold: {STALE_DATA_THRESHOLD_HOURS} hours")
-            
-            # Show notification status for current database
-            notification_state = load_notification_state()
-            last_notification_key = f"{selected_db}_last_notification"
-            
-            if last_notification_key in notification_state:
-                last_notification_str = notification_state[last_notification_key]
-                try:
-                    last_notification = datetime.fromisoformat(last_notification_str)
-                    st.caption(f"Last alert sent: {last_notification.strftime('%Y-%m-%d %H:%M')}")
-                except:
-                    pass
-            
-            # Test notification button
-            if st.button("🧪 Test Slack Notification"):
-                success = send_stale_data_notification(
-                    f"TEST_{selected_db}", 
-                    datetime.now() - timedelta(hours=6), 
-                    6.0
-                )
-                if success:
-                    st.success("Test notification sent!")
-                else:
-                    st.error("Failed to send test notification")
+    st.subheader("📊 Coin Status")
+    for sym, info in coins_config.items():
+        db = info.get("db_name", "")
+        if sym in all_data and not all_data[sym].empty:
+            latest_ts = all_data[sym]["timestamp"].max()
+            if latest_ts.tz is not None:
+                latest_ts = latest_ts.tz_convert(None)
+            hrs = (datetime.now() - latest_ts).total_seconds() / 3600
+            trades = len(all_data[sym])
+            icon = "🟢" if hrs < 2 else ("🟡" if hrs < STALE_DATA_THRESHOLD_HOURS else "🔴")
+            st.markdown(f"{icon} **{sym}** — {trades} trades, last {hrs:.1f}h ago")
         else:
-            st.error("❌ Invalid Slack bot token")
-            st.caption("Check your SLACK_BOT_TOKEN in .env file")
-    else:
-        st.warning("⚠️ Slack not configured")
-        st.markdown("""
-        **Setup Instructions:**
-        1. Create a Slack app at https://api.slack.com/apps
-        2. Add Bot Token Scopes: `chat:write`, `users:read`, `conversations:read`
-        3. Install app to your workspace
-        4. Get Bot User OAuth Token (starts with `xoxb-`)
-        5. Add to .env file:
-        ```
-        SLACK_BOT_TOKEN=xoxb-your-token-here
-        SLACK_USER_ID=your-user-id-here
-        ```
-        """)
-        
-        if st.button("🔍 Test Bot Token Only"):
-            test_token = st.text_input("Enter bot token to test:", type="password")
-            if test_token:
-                try:
-                    test_client = WebClient(token=test_token)
-                    user_id, username = get_slack_user_info(test_client)
-                    if user_id:
-                        st.success(f"✅ Token valid! User: {username}, ID: {user_id}")
-                    else:
-                        st.error("❌ Invalid token")
-                except Exception as e:
-                    st.error(f"❌ Token test failed: {str(e)}")
+            st.markdown(f"⚪ **{sym}** — no data")
 
-# 데이터 로드
-df = load_trade_data(selected_db)
+    st.markdown("---")
+    if st.button("🔄 Refresh Data"):
+        st.cache_data.clear()
+        st.rerun()
 
-# 최신 거래 정보
-if not df.empty:
-    latest = df.iloc[0]
-    
-    # 수익률 계산
-    first_trade = df.iloc[-1]
-    total_profit_pct = latest['profit_loss_pct']
-    
-    # Database info header
-    col_info1, col_info2, col_info3 = st.columns(3)
-    with col_info1:
-        st.info(f"📊 **Database:** {selected_db}")
-    with col_info2:
-        st.info(f"📈 **Total Trades:** {len(df)}")
-    with col_info3:
-        date_range = f"{df['timestamp'].min().strftime('%Y-%m-%d')} to {df['timestamp'].max().strftime('%Y-%m-%d')}"
-        st.info(f"📅 **Period:** {date_range}")
-    
-    # 2개 컬럼으로 주요 정보 표시
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    # Auto-refresh
+    auto_refresh = st.checkbox("Auto-refresh every 60s", value=False)
+    if auto_refresh:
+        import time as _time
+        _time.sleep(60)
+        st.rerun()
+
+# ──────────────────────────────────────────────────────────────────────
+# SECTION 1 – Portfolio Overview Metrics
+# ──────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("💰 Portfolio Overview")
+
+# Calculate latest values per coin
+latest_rows = {}
+total_crypto_value = 0
+total_krw = 0
+for sym, df in all_data.items():
+    latest = df.iloc[-1]
+    latest_rows[sym] = latest
+    total_crypto_value += latest["crypto_balance"] * latest["crypto_price"]
+
+# KRW is shared; take the most recent report
+if latest_rows:
+    most_recent_sym = max(latest_rows, key=lambda s: latest_rows[s]["timestamp"])
+    total_krw = latest_rows[most_recent_sym]["krw_balance"]
+
+total_value = total_krw + total_crypto_value
+
+# Headline metrics
+cols = st.columns(2 + len(all_data))
+with cols[0]:
+    st.metric("Total Portfolio", f"₩{total_value:,.0f}")
+with cols[1]:
+    st.metric("Cash (KRW)", f"₩{total_krw:,.0f}")
+
+for i, (sym, row) in enumerate(latest_rows.items()):
+    cv = row["crypto_balance"] * row["crypto_price"]
+    with cols[2 + i]:
         st.metric(
-            "포트폴리오 가치", 
-            f"₩{latest['portfolio_value']:,.0f}",
-            delta=f"{total_profit_pct:.2f}%"
+            f"{sym}",
+            f"₩{cv:,.0f}",
+            delta=f"{row['crypto_balance']:.6f} {sym}",
         )
-    
-    with col2:
-        st.metric(
-            "최근 거래", 
-            f"{latest['decision'].upper()} ({latest['percentage']}%)",
-            delta=f"{latest['timestamp'].strftime('%Y-%m-%d %H:%M')}"
+
+# ──────────────────────────────────────────────────────────────────────
+# SECTION 2 – Total Balance Over Time
+# ──────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📊 Total Portfolio Value Over Time")
+
+portfolio_ts = build_total_portfolio_series(all_data)
+
+if not portfolio_ts.empty:
+    pts = filter_by_time(portfolio_ts, selected_hours)
+
+    fig_portfolio = go.Figure()
+    fig_portfolio.add_trace(
+        go.Scatter(
+            x=pts["timestamp"],
+            y=pts["total_value"],
+            mode="lines",
+            name="Total Portfolio",
+            line=dict(color="#1f77b4", width=2.5),
+            fill="tozeroy",
+            fillcolor="rgba(31,119,180,0.10)",
         )
-    
-    # Crypto 및 현금 잔고
-    st.markdown(f"""
-    **Crypto 잔고:** {latest['crypto_balance']:.6f} Crypto (₩{latest['crypto_balance'] * latest['crypto_price']:,.0f})  
-    **KRW 잔고:** ₩{latest['krw_balance']:,.0f}
-    """)
+    )
+    fig_portfolio.add_trace(
+        go.Scatter(
+            x=pts["timestamp"],
+            y=pts["krw"],
+            mode="lines",
+            name="Cash (KRW)",
+            line=dict(color="#2ca02c", width=1, dash="dot"),
+        )
+    )
+    fig_portfolio.add_trace(
+        go.Scatter(
+            x=pts["timestamp"],
+            y=pts["total_crypto"],
+            mode="lines",
+            name="Crypto Total",
+            line=dict(color="#ff7f0e", width=1, dash="dot"),
+        )
+    )
+    fig_portfolio.update_layout(
+        hovermode="x unified",
+        yaxis_title="Value (KRW)",
+        yaxis_tickformat=",.0f",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=420,
+        margin=dict(l=40, r=20, t=30, b=40),
+    )
+    st.plotly_chart(fig_portfolio, use_container_width=True)
 else:
-    st.info(f"📂 Selected database: **{selected_db}**")
-    st.warning("No trading data available in the selected database.")
-    st.markdown("""
-    **Possible reasons:**
-    - This is a new database with no trades yet
-    - The trading bot hasn't started recording trades
-    - The database file is corrupted
-    
-    **Next steps:**
-    - Start the trading bot to generate data
-    - Select a different database with existing data
-    - Create a new database for fresh trading sessions
-    """)
+    st.info("Not enough data to build portfolio time-series.")
 
-# 수익률 차트 (Plotly)
-if not df.empty and len(df) > 1:
-    st.subheader("수익률 변화")
-    
-    # 시간순으로 정렬
-    df_sorted = df.sort_values('timestamp')
-    
-    # 기본 수익률 라인 차트 생성
-    fig = go.Figure()
-    
-    # 0% 라인 추가
-    fig.add_hline(y=0, line=dict(color='gray', width=1, dash='dash'))
-    
-    # 수익률 라인 추가
-    fig.add_trace(go.Scatter(
-        x=df_sorted['timestamp'], 
-        y=df_sorted['profit_loss_pct'],
-        mode='lines+markers',
-        name='수익률',
-        line=dict(color='blue', width=2),
-        marker=dict(size=8)
-    ))
-    
-    # 매수/매도 포인트 추가
-    for decision, color in [('buy', 'green'), ('sell', 'red'), ('hold', 'orange')]:
-        decision_df = df_sorted[df_sorted['decision'] == decision]
-        if not decision_df.empty:
-            fig.add_trace(go.Scatter(
-                x=decision_df['timestamp'],
-                y=decision_df['profit_loss_pct'],
-                mode='markers',
-                name=decision.upper(),
-                marker=dict(color=color, size=12, symbol='circle')
-            ))
-    
-    # 차트 레이아웃 설정
-    fig.update_layout(
-        title='첫 거래 대비 수익률 변화',
-        xaxis_title='날짜',
-        yaxis_title='수익률 (%)',
-        hovermode='x unified',
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        height=500,
-        margin=dict(l=40, r=40, t=60, b=40)
+# ──────────────────────────────────────────────────────────────────────
+# SECTION 3 – Individual Crypto Price Changes
+# ──────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📈 Crypto Price Changes")
+
+# Let user choose between overlaid (normalised %) or side-by-side
+price_mode = st.radio(
+    "Display mode",
+    ["Normalised % Change", "Absolute Price (subplots)"],
+    horizontal=True,
+)
+
+if price_mode == "Normalised % Change":
+    fig_prices = go.Figure()
+    fig_prices.add_hline(y=0, line=dict(color="gray", width=1, dash="dash"))
+
+    for idx, (sym, df) in enumerate(all_data.items()):
+        dff = filter_by_time(df, selected_hours)
+        if dff.empty:
+            continue
+        base_price = dff.iloc[0]["crypto_price"]
+        if base_price == 0:
+            continue
+        pct = ((dff["crypto_price"] - base_price) / base_price) * 100
+
+        fig_prices.add_trace(
+            go.Scatter(
+                x=dff["timestamp"],
+                y=pct,
+                mode="lines+markers",
+                name=sym,
+                line=dict(color=coin_color(sym, idx), width=2),
+                marker=dict(size=4),
+            )
+        )
+
+        # Mark buy/sell
+        for decision, marker_sym, size in [("buy", "triangle-up", 12), ("sell", "triangle-down", 12)]:
+            dec_df = dff[dff["decision"] == decision]
+            if dec_df.empty:
+                continue
+            dec_pct = ((dec_df["crypto_price"] - base_price) / base_price) * 100
+            fig_prices.add_trace(
+                go.Scatter(
+                    x=dec_df["timestamp"],
+                    y=dec_pct,
+                    mode="markers",
+                    name=f"{sym} {decision.upper()}",
+                    marker=dict(
+                        color="green" if decision == "buy" else "red",
+                        size=size,
+                        symbol=marker_sym,
+                        line=dict(width=1, color="white"),
+                    ),
+                    showlegend=False,
+                )
+            )
+
+    fig_prices.update_layout(
+        yaxis_title="Price Change (%)",
+        yaxis_ticksuffix="%",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=450,
+        margin=dict(l=40, r=20, t=30, b=40),
     )
-    
-    # 호버 정보 커스터마이징
-    fig.update_traces(
-        hovertemplate='%{x}<br>수익률: %{y:.2f}%<br>'
+    st.plotly_chart(fig_prices, use_container_width=True)
+
+else:
+    # Absolute price sub-plots
+    n = len(all_data)
+    fig_abs = make_subplots(
+        rows=n, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        subplot_titles=[f"{sym} (KRW)" for sym in all_data],
     )
-    
-    # y축 포맷 설정
-    fig.update_yaxes(ticksuffix='%')
-    
-    st.plotly_chart(fig, use_container_width=True)
+    for idx, (sym, df) in enumerate(all_data.items(), start=1):
+        dff = filter_by_time(df, selected_hours)
+        if dff.empty:
+            continue
+        fig_abs.add_trace(
+            go.Scatter(
+                x=dff["timestamp"],
+                y=dff["crypto_price"],
+                mode="lines",
+                name=sym,
+                line=dict(color=coin_color(sym, idx - 1), width=2),
+            ),
+            row=idx, col=1,
+        )
+        # Buy/sell markers
+        for decision, color, marker_sym in [("buy", "green", "triangle-up"), ("sell", "red", "triangle-down")]:
+            dec_df = dff[dff["decision"] == decision]
+            if dec_df.empty:
+                continue
+            fig_abs.add_trace(
+                go.Scatter(
+                    x=dec_df["timestamp"],
+                    y=dec_df["crypto_price"],
+                    mode="markers",
+                    name=f"{sym} {decision.upper()}",
+                    marker=dict(color=color, size=10, symbol=marker_sym),
+                    showlegend=False,
+                ),
+                row=idx, col=1,
+            )
+        fig_abs.update_yaxes(tickformat=",.0f", row=idx, col=1)
 
-# Crypto 가격 차트 (Plotly)
-if not df.empty:
-    st.subheader("Crypto 가격 변화")
-    
-    # 시간순으로 정렬
-    df_sorted = df.sort_values('timestamp')
-
-    # 기본 Crypto 가격 차트 생성
-    fig = go.Figure()
-
-    # Crypto 가격 라인 추가
-    fig.add_trace(go.Scatter(
-        x=df_sorted['timestamp'], 
-        y=df_sorted['crypto_price'],
-        mode='lines+markers',
-        name='Crypto 가격',
-        line=dict(color='orange', width=2),
-        marker=dict(size=6)
-    ))
-    
-    # 매수/매도 포인트 추가
-    for decision, color, symbol in [('buy', 'green', 'triangle-up'), ('sell', 'red', 'triangle-down')]:
-        decision_df = df_sorted[df_sorted['decision'] == decision]
-        if not decision_df.empty:
-            fig.add_trace(go.Scatter(
-                x=decision_df['timestamp'],
-                y=decision_df['crypto_price'],
-                mode='markers',
-                name=decision.upper(),
-                marker=dict(color=color, size=14, symbol=symbol)
-            ))
-    
-    # 차트 레이아웃 설정
-    fig.update_layout(
-        title='Crypto 가격 변화와 거래 결정',
-        xaxis_title='날짜',
-        yaxis_title='Crypto 가격 (KRW)',
-        hovermode='x unified',
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-        height=500,
-        margin=dict(l=40, r=40, t=60, b=40)
+    fig_abs.update_layout(
+        height=300 * n,
+        hovermode="x unified",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=20, t=40, b=40),
     )
-    
-    # 호버 정보 커스터마이징
-    fig.update_traces(
-        hovertemplate='%{x}<br>가격: ₩%{y:,.0f}<br>'
+    st.plotly_chart(fig_abs, use_container_width=True)
+
+# ──────────────────────────────────────────────────────────────────────
+# SECTION 4 – Trade History
+# ──────────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("📋 Trade History")
+
+# Combine all trades
+all_trades = []
+for sym, df in all_data.items():
+    dff = filter_by_time(df, selected_hours).copy()
+    if dff.empty:
+        continue
+    dff["symbol"] = sym
+    all_trades.append(dff)
+
+if all_trades:
+    combined = pd.concat(all_trades, ignore_index=True).sort_values("timestamp", ascending=False)
+
+    # Filter by coin
+    filter_coins = st.multiselect(
+        "Filter by coin:",
+        sorted(all_data.keys()),
+        default=sorted(all_data.keys()),
     )
-    
-    # y축 포맷 설정
-    fig.update_yaxes(tickformat=',.0f')
-    
-    st.plotly_chart(fig, use_container_width=True)
+    combined = combined[combined["symbol"].isin(filter_coins)]
 
-# 매매 내역 테이블
-st.subheader("매매 내역")
+    display_df = pd.DataFrame(
+        {
+            "Time": combined["timestamp"].dt.strftime("%Y-%m-%d %H:%M"),
+            "Coin": combined["symbol"],
+            "Decision": combined["decision"].str.upper(),
+            "Pct (%)": combined["percentage"],
+            "Crypto Price": combined["crypto_price"].apply(lambda x: f"₩{x:,.0f}"),
+            "Crypto Bal": combined["crypto_balance"],
+            "KRW Bal": combined["krw_balance"].apply(lambda x: f"₩{x:,.0f}"),
+            "Portfolio": combined["portfolio_value"].apply(lambda x: f"₩{x:,.0f}"),
+            "Return (%)": combined["profit_loss_pct"].apply(lambda x: f"{x:.2f}"),
+        }
+    )
 
-if not df.empty:
-    # 표시할 컬럼 선택 및 새 DataFrame 생성 (복사 대신)
-    display_df = pd.DataFrame({
-        '시간': df['timestamp'].dt.strftime('%Y-%m-%d %H:%M'),
-        '결정': df['decision'].str.upper(),
-        '비율(%)': df['percentage'],
-        'Crypto 가격(KRW)': df['crypto_price'].apply(lambda x: f"{x:,.0f}"),
-        'Crypto 잔고': df['crypto_balance'],
-        'KRW 잔고': df['krw_balance'].apply(lambda x: f"{x:,.0f}"),
-        '수익률(%)': df['profit_loss_pct'].apply(lambda x: f"{x:.2f}")
-    })
-    
-    # 스타일링된 데이터프레임
     st.dataframe(
         display_df,
         use_container_width=True,
         hide_index=True,
         column_config={
-            # "결정": st.column_config.SelectboxColumn(
-            #     width="small",
-            # ),
-            "비율(%)": st.column_config.NumberColumn(
-                format="%.1f%%",
-                width="small",
-            ),
-            "수익률(%)": st.column_config.NumberColumn(
-                format="%.2f%%",
-                width="medium",
-            ),
-        }
+            "Pct (%)": st.column_config.NumberColumn(format="%.1f%%", width="small"),
+            "Return (%)": st.column_config.NumberColumn(format="%.2f%%", width="small"),
+        },
     )
 
-# 거래 상세 정보
-st.subheader("최근 거래 상세 정보")
+    # ── Trade detail expander ────────────────────────────────────────
+    st.subheader("🔍 Trade Detail")
+    trade_options = [
+        f"{row['timestamp'].strftime('%Y-%m-%d %H:%M')} — {row['symbol']} {row['decision'].upper()}"
+        for _, row in combined.iterrows()
+    ]
+    if trade_options:
+        selected_idx = st.selectbox("Select a trade:", range(len(trade_options)), format_func=lambda i: trade_options[i])
+        sel = combined.iloc[selected_idx]
+        st.markdown(
+            f"""
+**{sel['symbol']}** — {sel['timestamp'].strftime('%Y-%m-%d %H:%M')}
 
-if not df.empty:
-        selected_idx = st.selectbox("거래 선택:", 
-                                     range(len(df)), 
-                                     format_func=lambda i: f"{df.iloc[i]['timestamp'].strftime('%Y-%m-%d %H:%M')} - {df.iloc[i]['decision'].upper()}")
-        
-        selected_trade = df.iloc[selected_idx]
-        
-        # 거래 상세 정보
-        st.markdown(f"""
-        ### {selected_trade['timestamp'].strftime('%Y-%m-%d %H:%M')} 거래 세부사항
-        
-        **결정:** {selected_trade['decision'].upper()} {selected_trade['percentage']*100}%  
-        **Crypto 가격:** ₩{selected_trade['crypto_price']:,.0f}  
-        **거래 후 Crypto 잔고:** {selected_trade['crypto_balance']:.8f} Crypto  
-        **거래 후 KRW 잔고:** ₩{selected_trade['krw_balance']:,.0f}  
-        **포트폴리오 가치:** ₩{selected_trade['portfolio_value']:,.0f}  
-        **수익률:** {selected_trade['profit_loss_pct']:.2f}%
+| Field | Value |
+|-------|-------|
+| Decision | {sel['decision'].upper()} {sel['percentage']}% |
+| Crypto Price | ₩{sel['crypto_price']:,.0f} |
+| Crypto Balance | {sel['crypto_balance']:.8f} {sel['symbol']} |
+| KRW Balance | ₩{sel['krw_balance']:,.0f} |
+| Portfolio Value | ₩{sel['portfolio_value']:,.0f} |
+| Return | {sel['profit_loss_pct']:.2f}% |
 
-        **AI 판단 이유**        
-        {selected_trade['reason']}
-        """)
+**AI Reasoning**
 
-# Database Comparison Section
-st.markdown("---")
-st.subheader("📊 Database Comparison")
+{sel['reason']}
+"""
+        )
 
-# Get available databases again for comparison
-available_dbs = get_available_databases()
-
-if len(available_dbs) > 1:
-    st.markdown("Compare performance across different trading sessions:")
-    
-    # Multi-select for databases to compare
-    selected_dbs_for_comparison = st.multiselect(
-        "Select databases to compare:",
-        available_dbs,
-        default=[selected_db] if selected_db in available_dbs else [],
-        help="Choose multiple databases to compare their performance"
-    )
-    
-    if len(selected_dbs_for_comparison) > 1:
-        comparison_data = []
-        
-        for db in selected_dbs_for_comparison:
-            if os.path.exists(db) and validate_database(db):
-                try:
-                    temp_df = load_trade_data(db)
-                    if not temp_df.empty:
-                        latest_trade = temp_df.iloc[0]
-                        first_trade = temp_df.iloc[-1]
-                        
-                        comparison_data.append({
-                            'Database': db,
-                            'Total Trades': len(temp_df),
-                            'Start Date': first_trade['timestamp'].strftime('%Y-%m-%d'),
-                            'End Date': latest_trade['timestamp'].strftime('%Y-%m-%d'),
-                            'Final Portfolio Value': f"₩{latest_trade['portfolio_value']:,.0f}",
-                            'Total Return (%)': f"{latest_trade['profit_loss_pct']:.2f}%",
-                            'Buy Trades': len(temp_df[temp_df['decision'] == 'buy']),
-                            'Sell Trades': len(temp_df[temp_df['decision'] == 'sell']),
-                            'Hold Trades': len(temp_df[temp_df['decision'] == 'hold'])
-                        })
-                except Exception as e:
-                    st.warning(f"Could not load data from {db}: {str(e)}")
-        
-        if comparison_data:
-            comparison_df = pd.DataFrame(comparison_data)
-            st.dataframe(
-                comparison_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Total Return (%)": st.column_config.TextColumn(
-                        width="medium",
-                    ),
-                    "Final Portfolio Value": st.column_config.TextColumn(
-                        width="large",
-                    ),
-                }
-            )
-            
-            # Performance comparison chart
-            if len(comparison_data) > 1:
-                st.subheader("📈 Performance Comparison")
-                
-                # Extract return percentages for chart
-                returns = []
-                db_names = []
-                for item in comparison_data:
-                    try:
-                        return_pct = float(item['Total Return (%)'].replace('%', ''))
-                        returns.append(return_pct)
-                        db_names.append(item['Database'])
-                    except:
-                        continue
-                
-                if returns:
-                    fig = go.Figure(data=[
-                        go.Bar(
-                            x=db_names,
-                            y=returns,
-                            marker_color=['green' if r >= 0 else 'red' for r in returns],
-                            text=[f"{r:.2f}%" for r in returns],
-                            textposition='auto',
-                        )
-                    ])
-                    
-                    fig.update_layout(
-                        title='Total Return Comparison Across Databases',
-                        xaxis_title='Database',
-                        yaxis_title='Total Return (%)',
-                        yaxis=dict(ticksuffix='%'),
-                        height=400
-                    )
-                    
-                    # Add horizontal line at 0%
-                    fig.add_hline(y=0, line=dict(color='gray', width=1, dash='dash'))
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No valid data found in selected databases for comparison.")
-    elif len(selected_dbs_for_comparison) == 1:
-        st.info("Select at least 2 databases to see comparison.")
 else:
-    st.info("Only one database available. Create more databases to enable comparison features.")
-
-# Database Monitoring Section
-st.markdown("---")
-st.subheader("🔍 Database Monitoring")
-
-st.markdown("Monitor data freshness across all databases:")
-
-# Create monitoring table
-monitoring_data = []
-available_dbs = get_available_databases()
-
-for db in available_dbs:
-    if os.path.exists(db) and validate_database(db):
-        try:
-            conn = sqlite3.connect(db)
-            cursor = conn.cursor()
-            
-            # Get latest timestamp and trade count
-            cursor.execute("SELECT MAX(timestamp), COUNT(*) FROM trades")
-            result = cursor.fetchone()
-            latest_timestamp_str, trade_count = result
-            conn.close()
-            
-            if latest_timestamp_str and trade_count > 0:
-                latest_timestamp = pd.to_datetime(latest_timestamp_str)
-                current_time = datetime.now()
-                
-                # Convert to timezone-naive if needed
-                if latest_timestamp.tz is not None:
-                    latest_timestamp = latest_timestamp.tz_convert(None)
-                
-                time_diff = current_time - latest_timestamp
-                hours_since_update = time_diff.total_seconds() / 3600
-                
-                # Determine status
-                if hours_since_update > STALE_DATA_THRESHOLD_HOURS:
-                    status = "🔴 STALE"
-                    status_color = "red"
-                elif hours_since_update > 2:
-                    status = "🟡 OLD"
-                    status_color = "orange"
-                else:
-                    status = "🟢 FRESH"
-                    status_color = "green"
-                
-                monitoring_data.append({
-                    'Database': db,
-                    'Status': status,
-                    'Trades': trade_count,
-                    'Last Update': latest_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                    'Hours Ago': f"{hours_since_update:.1f}",
-                    'File Size (KB)': f"{os.path.getsize(db) / 1024:.1f}"
-                })
-            else:
-                monitoring_data.append({
-                    'Database': db,
-                    'Status': "⚪ EMPTY",
-                    'Trades': 0,
-                    'Last Update': "No data",
-                    'Hours Ago': "N/A",
-                    'File Size (KB)': f"{os.path.getsize(db) / 1024:.1f}"
-                })
-                
-        except Exception as e:
-            monitoring_data.append({
-                'Database': db,
-                'Status': "❌ ERROR",
-                'Trades': "Error",
-                'Last Update': f"Error: {str(e)[:30]}...",
-                'Hours Ago': "N/A",
-                'File Size (KB)': "N/A"
-            })
-
-if monitoring_data:
-    monitoring_df = pd.DataFrame(monitoring_data)
-    
-    # Display monitoring table
-    st.dataframe(
-        monitoring_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Status": st.column_config.TextColumn(
-                width="small",
-            ),
-            "Hours Ago": st.column_config.NumberColumn(
-                format="%.1f",
-                width="small",
-            ),
-            "File Size (KB)": st.column_config.TextColumn(
-                width="small",
-            ),
-        }
-    )
-    
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    fresh_count = len([d for d in monitoring_data if "🟢" in d['Status']])
-    old_count = len([d for d in monitoring_data if "🟡" in d['Status']])
-    stale_count = len([d for d in monitoring_data if "🔴" in d['Status']])
-    error_count = len([d for d in monitoring_data if "❌" in d['Status']])
-    
-    with col1:
-        st.metric("🟢 Fresh", fresh_count)
-    with col2:
-        st.metric("🟡 Old", old_count)
-    with col3:
-        st.metric("🔴 Stale", stale_count)
-    with col4:
-        st.metric("❌ Errors", error_count)
-    
-    # Auto-refresh option
-    st.markdown("---")
-    auto_refresh = st.checkbox("🔄 Auto-refresh every 30 seconds", value=False)
-    
-    if auto_refresh:
-        import time
-        time.sleep(30)
-        st.rerun()
-else:
-    st.warning("No databases found for monitoring.")
+    st.info("No trades in the selected time range.")
