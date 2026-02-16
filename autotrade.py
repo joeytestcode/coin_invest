@@ -6,7 +6,8 @@ import time
 import schedule
 import feedparser
 import pyupbit
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
@@ -316,12 +317,16 @@ class MultiCryptoTrader:
                 return json.loads(response.choices[0].message.content)
             
             elif SELECTED_AI_MODEL.startswith("gemini"):
-                genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-                model = genai.GenerativeModel(
-                    model_name=SELECTED_AI_MODEL,
-                    system_instruction=system_prompt
+                client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+                # Generate a response
+                resp = client.models.generate_content(
+                    model=SELECTED_AI_MODEL,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt
+                    ),
+                    contents=json.dumps(market_data)
                 )
-                resp = model.generate_content(json.dumps(market_data))
                 text = resp.text.strip()
                 # Clean markdown code blocks if present
                 if text.startswith("```"):
