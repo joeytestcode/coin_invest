@@ -1,0 +1,24 @@
+services:
+  trading-bot:
+    build: .
+    container_name: trading-bot
+    command: python autotrade.py
+    env_file:
+      - .env
+    volumes:
+      - ./dashboard_state:/app/dashboard_state
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    container_name: trading-dashboard
+    command: streamlit run dashboard.py --server.headless true --server.port 8501
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./dashboard_state:/app/dashboard_state
+    depends_on:
+      - trading-bot
+    restart: unless-stopped

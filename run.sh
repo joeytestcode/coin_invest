@@ -58,6 +58,3 @@ echo ""
 echo "📝 If terminals didn't open, check the log files:"
 echo "   - trading_bot.log (for trading bot output)"
 echo "   - dashboard.log (for dashboard output)"
-
-start_in_terminal "cloudflare connection for coin invest" "cloudflared tunnel run --token eyJhIjoiNjZkNmFiZTg5OGQ2ZmEzZmQxMjMzZmIxZWIyZWE0Y2IiLCJ0IjoiOTg0YzcyMzgtMzMwMC00NmU5LTliMTktYjY0ZmMzYzY0MjRkIiwicyI6IllURTJOR1l3TlRFdFptRmxaUzAwWmprM0xUa3pNV0V0TldWaVlUYzNPVFk1WWpFMCJ9"
-
