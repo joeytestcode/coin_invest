@@ -3,25 +3,25 @@
         "XRP": {
             "name": "XRP",
             "ticker": "KRW-XRP",
-            "db_name": "coin_auto_trade_xrp.db",
+            "db_name": "db/coin_auto_trade_xrp.db",
             "enabled": true
         },
         "ETH": {
             "name": "Ethereum",
             "ticker": "KRW-ETH",
-            "db_name": "coin_auto_trade_eth.db",
+            "db_name": "db/coin_auto_trade_eth.db",
             "enabled": true
         },
         "SOL": {
             "name": "Solana",
             "ticker": "KRW-SOL",
-            "db_name": "coin_auto_trade_sol.db",
+            "db_name": "db/coin_auto_trade_sol.db",
             "enabled": true
         },
         "BTC": {
             "name": "Bitcoin",
             "ticker": "KRW-BTC",
-            "db_name": "coin_auto_trade_btc.db",
+            "db_name": "db/coin_auto_trade_btc.db",
             "enabled": true
         }
     },

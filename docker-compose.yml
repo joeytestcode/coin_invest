@@ -10,6 +10,7 @@ services:
       - .env
     volumes:
       - ./dashboard_state:/app/dashboard_state
+      - db_data:/app/db
     restart: unless-stopped
 
   dashboard:
@@ -24,6 +25,10 @@ services:
       - "8501:8501"
     volumes:
       - ./dashboard_state:/app/dashboard_state
+      - db_data:/app/db
     depends_on:
       - trading-bot
     restart: unless-stopped
+
+volumes:
+  db_data:
