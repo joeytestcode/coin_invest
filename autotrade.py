@@ -8,6 +8,7 @@ import feedparser
 import pyupbit
 from google import genai
 from google.genai import types
+import requests as http_requests
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
@@ -183,6 +184,43 @@ _{reason}_
         except Exception as e:
             print(f"⚠️ {self.crypto_symbol}: Slack Notification Error: {e}")
 
+    def send_telegram_notification(self, decision, percentage, reason, crypto_balance, krw_balance, crypto_price, order_executed):
+        """Send trade execution notification to Telegram."""
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        if not bot_token or not chat_id:
+            return
+
+        try:
+            total_value = krw_balance + (crypto_balance * crypto_price)
+            emoji = {"buy": "🟢", "sell": "🔴", "hold": "🟡"}.get(decision.lower(), "❓")
+            status = "EXECUTED" if order_executed else "SKIPPED"
+
+            message = (
+                f"{emoji} <b>{self.crypto_name} Trading Alert</b> {emoji}\n"
+                f"<b>Decision:</b> {decision.upper()} {percentage:.1f}% ({status})\n"
+                f"<b>Timestamp:</b> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"<b>Portfolio:</b>\n"
+                f"• {self.crypto_symbol}: <code>{crypto_balance:.6f}</code> (₩{crypto_balance * crypto_price:,.0f})\n"
+                f"• KRW: <code>₩{krw_balance:,.0f}</code>\n"
+                f"• Total: <code>₩{total_value:,.0f}</code>\n"
+                f"• Price: <code>₩{crypto_price:,.0f}</code>\n\n"
+                f"<b>Reasoning:</b>\n"
+                f"<i>{reason}</i>"
+            )
+
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            resp = http_requests.post(url, json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+            }, timeout=10)
+            resp.raise_for_status()
+            print(f"✅ {self.crypto_symbol}: Telegram notification sent")
+        except Exception as e:
+            print(f"⚠️ {self.crypto_symbol}: Telegram Notification Error: {e}")
+
     def get_market_data(self):
         """Gather market data (charts, news, balance)."""
         print(f"📊 {self.crypto_symbol}: Fetching chart data...")
@@ -299,7 +337,11 @@ _{reason}_
             
             # Notify on active trades
             if decision in ["buy", "sell"]:
-                self.send_slack_notification(decision, percentage*100, result["reason"], my_crypto, my_krw, current_price, order_executed)
+                notif_method = config_manager.get("notification_method", "slack")
+                if notif_method in ("slack", "both"):
+                    self.send_slack_notification(decision, percentage*100, result["reason"], my_crypto, my_krw, current_price, order_executed)
+                if notif_method in ("telegram", "both"):
+                    self.send_telegram_notification(decision, percentage*100, result["reason"], my_crypto, my_krw, current_price, order_executed)
                 
             print(f"✅ Trade Completed: {decision}")
 

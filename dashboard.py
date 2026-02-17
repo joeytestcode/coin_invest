@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import os
 import json
+import requests as http_requests
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -24,6 +25,15 @@ st.set_page_config(
 STALE_DATA_THRESHOLD_HOURS = 7
 NOTIFICATION_STATE_FILE = "dashboard_state/notification_tracking.json"
 CONFIG_FILE = "config_coins.json"
+
+def get_notification_method():
+    """Read notification_method from config_coins.json."""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            cfg = json.load(f)
+        return cfg.get("notification_method", "slack")
+    except Exception:
+        return "slack"
 
 os.makedirs("dashboard_state", exist_ok=True)
 
@@ -108,6 +118,31 @@ def send_stale_data_notification(db_name, last_update_time, hours_stale):
         return False
 
 
+def send_telegram_stale_data_notification(db_name, last_update_time, hours_stale):
+    """Send stale data alert to Telegram."""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        return False
+    try:
+        message = (
+            f"⚠️ <b>Trading Bot Alert – Stale Data</b>\n"
+            f"<b>Database:</b> <code>{db_name}</code>\n"
+            f"<b>Last Update:</b> {last_update_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"<b>Hours Since Update:</b> {hours_stale:.1f}\n"
+        )
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        resp = http_requests.post(url, json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+        }, timeout=10)
+        resp.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
 def check_database_freshness(db_name, df):
     if df.empty:
         return
@@ -127,7 +162,10 @@ def check_database_freshness(db_name, df):
         except Exception:
             pass
     if should_notify:
-        if send_stale_data_notification(db_name, latest_ts, hours_stale):
+        notif_method = get_notification_method()
+        sent = send_stale_data_notification(db_name, latest_ts, hours_stale) if notif_method in ("slack", "both") else False
+        sent_tg = send_telegram_stale_data_notification(db_name, latest_ts, hours_stale) if notif_method in ("telegram", "both") else False
+        if sent or sent_tg:
             ns[key] = datetime.now().isoformat()
             save_notification_state(ns)
 

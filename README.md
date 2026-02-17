@@ -8,6 +8,7 @@ A streamlined cryptocurrency auto-trading system with a monitoring dashboard.
 - **AI-Powered Decisions**: Uses AI to analyze market data and news for trading decisions.
 - **Monitoring Dashboard**: Real-time dashboard to view trading status and history.
 - **Slack Notifications**: Get alerts for trades and stale data.
+- **Telegram Notifications**: Alternative (or additional) alerts via Telegram.
 - **Robust Architecture**: Decoupled trading bot and dashboard for stability.
 
 ## Setup
@@ -29,6 +30,10 @@ SERAPI_API_KEY=your_serapi_key (optional)
 SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
 SLACK_USER_ID=your-slack-user-id
 SLACK_CHANNEL_ID=your-slack-channel-id
+
+# Telegram Notifications (optional)
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=your-telegram-chat-id
 ```
 
 3. Configure coins in `config_coins.json`.

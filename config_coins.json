@@ -25,5 +25,6 @@
             "enabled": true
         }
     },
-    "trade_interval_hours": 4
+    "trade_interval_hours": 4,
+    "notification_method": "telegram"
 }
