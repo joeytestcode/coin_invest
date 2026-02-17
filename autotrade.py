@@ -240,8 +240,14 @@ _{reason}_
             "recent_trades": self.get_recent_trades(limit=4)
         }
 
-    def execute_decision(self, result):
-        """Execute the AI trade decision."""
+    def execute_decision(self, result, allocated_krw=None):
+        """Execute the AI trade decision.
+        
+        Args:
+            result: AI decision dict with 'decision', 'percentage', 'reason'
+            allocated_krw: Pre-allocated KRW amount for buy orders (used for multi-coin coordination).
+                           If None, falls back to fetching current KRW balance.
+        """
         print(f"\n🚀 {self.crypto_symbol} ({self.crypto_name}) Executing: {result['decision'].upper()}")
         
         try:
@@ -256,13 +262,18 @@ _{reason}_
             order_executed = False
 
             if decision == "buy":
-                amount = my_krw * 0.9995 * percentage
+                if allocated_krw is not None:
+                    # Use pre-allocated KRW amount directly (already accounts for fees)
+                    amount = allocated_krw
+                    print(f"📌 Using pre-allocated ₩{amount:,.0f} for buy")
+                else:
+                    amount = my_krw * 0.9995 * percentage
                 if amount > 5000:
                     print(f"💰 Buying ₩{amount:,.0f}")
                     upbit.buy_market_order(self.ticker, amount)
                     order_executed = True
                 else:
-                    print(f"❌ Insufficient KRW (>5000 required)")
+                    print(f"❌ Insufficient KRW for {self.crypto_symbol}: ₩{amount:,.0f} (>5,000 required)")
             
             elif decision == "sell":
                 amount = my_crypto * percentage
@@ -309,6 +320,55 @@ class MultiCryptoTrader:
             if cfg.get("enabled", False)
         }
         print(f"🎯 Active Traders: {', '.join(self.traders.keys())}")
+
+    def _allocate_krw_for_buys(self, decisions):
+        """Pre-allocate KRW across all buy decisions to prevent sequential depletion.
+        
+        Returns a dict mapping symbol -> allocated KRW amount for buy orders.
+        Sell and hold decisions are not affected.
+        """
+        allocations = {}
+
+        # Collect all buy decisions and their requested percentages
+        buy_requests = {}
+        for sym, decision in decisions.items():
+            if sym in self.traders and decision.get("decision") == "buy":
+                pct = decision.get("percentage", 0) / 100
+                if pct > 0:
+                    buy_requests[sym] = pct
+
+        if not buy_requests:
+            return allocations
+
+        # Fetch current total KRW balance once
+        try:
+            upbit = pyupbit.Upbit(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
+            total_krw = upbit.get_balance("KRW") or 0.0
+        except Exception as e:
+            print(f"⚠️ Failed to fetch KRW for allocation: {e}")
+            return allocations
+
+        available_krw = total_krw * 0.9995  # Account for fees
+
+        # Calculate total requested percentage
+        total_pct = sum(buy_requests.values())
+        
+        if total_pct > 1.0:
+            # Scale down proportionally if total exceeds 100%
+            print(f"⚠️ Total buy allocation ({total_pct*100:.0f}%) exceeds 100%. Scaling down proportionally.")
+            scale_factor = 1.0 / total_pct
+            buy_requests = {sym: pct * scale_factor for sym, pct in buy_requests.items()}
+
+        # Allocate KRW for each buy based on its share of the total balance
+        for sym, pct in buy_requests.items():
+            amount = available_krw * pct
+            allocations[sym] = amount
+            print(f"📊 KRW Allocation - {sym}: ₩{amount:,.0f} ({pct*100:.1f}%)")
+
+        remaining = available_krw - sum(allocations.values())
+        print(f"📊 KRW After allocation: ₩{remaining:,.0f} remaining")
+
+        return allocations
 
     def call_ai_model(self, system_prompt, market_data):
         """Handle AI API calls abstraction."""
@@ -387,10 +447,18 @@ class MultiCryptoTrader:
             print("❌ No AI decisions received.")
             return
 
+        # Log all AI decisions before execution
+        for sym, d in decisions.items():
+            print(f"📋 AI Decision - {sym}: {d.get('decision', 'N/A').upper()} {d.get('percentage', 0)}%")
+
+        # Pre-allocate KRW for buy decisions to prevent sequential depletion
+        buy_allocations = self._allocate_krw_for_buys(decisions)
+
         # Execute
         for sym, decision in decisions.items():
             if sym in self.traders:
-                self.traders[sym].execute_decision(decision)
+                allocated = buy_allocations.get(sym)
+                self.traders[sym].execute_decision(decision, allocated_krw=allocated)
             else:
                 print(f"⚠️ Unknown symbol in decision: {sym}")
         
