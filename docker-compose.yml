@@ -5,6 +5,7 @@ services:
     command: python autotrade.py
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=Asia/Seoul
     env_file:
       - .env
     volumes:
@@ -15,6 +16,8 @@ services:
     build: .
     container_name: trading-dashboard
     command: streamlit run dashboard.py --server.headless true --server.port 8501
+    environment:
+      - TZ=Asia/Seoul
     env_file:
       - .env
     ports:

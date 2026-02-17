@@ -469,7 +469,12 @@ class MultiCryptoTrader:
         print("🔄 Multi-Crypto Auto Trader Started (Centralized Mode)")
         
         def job():
-            self.run_trading_session()
+            try:
+                self.run_trading_session()
+            except Exception as e:
+                print(f"❌ Trading session failed with error: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Run once immediately
         job()
@@ -480,15 +485,20 @@ class MultiCryptoTrader:
         print(f"📅 Scheduled every {interval} hours.")
 
         while True:
-            # Dynamic rescheduling check
-            current_interval = config_manager.get("trade_interval_hours", 4)
-            if current_interval != interval:
-                schedule.clear()
-                interval = current_interval
-                schedule.every(interval).hours.do(job)
-                print(f"🔄 Interval updated to {interval} hours.")
-            
-            schedule.run_pending()
+            try:
+                # Dynamic rescheduling check
+                current_interval = config_manager.get("trade_interval_hours", 4)
+                if current_interval != interval:
+                    schedule.clear()
+                    interval = current_interval
+                    schedule.every(interval).hours.do(job)
+                    print(f"🔄 Interval updated to {interval} hours.")
+                
+                schedule.run_pending()
+            except Exception as e:
+                print(f"❌ Scheduler error: {e}")
+                import traceback
+                traceback.print_exc()
             time.sleep(60)
 
 if __name__ == "__main__":
